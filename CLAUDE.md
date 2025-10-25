@@ -185,7 +185,7 @@ Ok(minutes as i16)  // 40000 becomes -25536
 
 **WASM Binary:**
 - Size: 301 KB (under 320 KB warning threshold ✅)
-- Checksum: `494038bc7b5ed52880a2d9e276bb85adb7c8b91794f6bbfbba9ec147467297f2`
+- Checksum: See [GitHub Releases](https://github.com/powabase/supabase-fdw-ntp/releases/latest)
 - Validation: Zero WASI CLI imports ✅
 - Host version: ^0.1.0 (critical requirement)
 

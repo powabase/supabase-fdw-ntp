@@ -28,7 +28,7 @@ CREATE SERVER ntp_server
     fdw_package_url 'https://github.com/powabase/supabase-fdw-ntp/releases/download/v0.2.0/supabase_fdw_ntp.wasm',
     fdw_package_name 'supabase-fdw-ntp',
     fdw_package_version '0.2.0',
-    fdw_package_checksum '494038bc7b5ed52880a2d9e276bb85adb7c8b91794f6bbfbba9ec147467297f2',
+    fdw_package_checksum '<checksum>',  -- Get from: https://github.com/powabase/supabase-fdw-ntp/releases
     api_base_url 'https://ds.netztransparenz.de/api/v1/data',
     oauth2_token_url 'https://identity.netztransparenz.de/users/connect/token',
     oauth2_client_id 'YOUR_CLIENT_ID',           -- Replace with your credentials
@@ -393,7 +393,7 @@ LIMIT 5;
      - `data_category`: 'forecast', 'extrapolation', 'online_actual'
 
 3. **Wind offshore with old version** - v0.1.x had 'N.E.' parsing bug
-   - **Solution:** Ensure using v0.2.0+ (checksum: 494038bc...)
+   - **Solution:** Ensure using v0.2.0+ (verify checksum from [releases](https://github.com/powabase/supabase-fdw-ntp/releases))
 
 ---
 

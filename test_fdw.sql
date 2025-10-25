@@ -27,7 +27,7 @@ CREATE SERVER IF NOT EXISTS ntp_server
     fdw_package_url 'https://github.com/powabase/supabase-fdw-ntp/releases/download/v0.2.0/supabase_fdw_ntp.wasm',
     fdw_package_name 'powabase:supabase-fdw-ntp',
     fdw_package_version '0.2.0',
-    fdw_package_checksum '494038bc7b5ed52880a2d9e276bb85adb7c8b91794f6bbfbba9ec147467297f2',
+    fdw_package_checksum '<checksum>',  -- Get from: https://github.com/powabase/supabase-fdw-ntp/releases
     api_base_url 'https://ds.netztransparenz.de',
     oauth2_token_url 'https://identity.netztransparenz.de/users/connect/token',
     oauth2_client_id 'YOUR_CLIENT_ID',

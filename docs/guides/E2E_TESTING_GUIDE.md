@@ -3,7 +3,7 @@
 **Date**: 2025-10-25
 **Status**: Ready for E2E Testing
 **WASM Binary**: 301 KB (validated)
-**SHA256**: `494038bc7b5ed52880a2d9e276bb85adb7c8b91794f6bbfbba9ec147467297f2`
+**SHA256**: See [GitHub Releases](https://github.com/powabase/supabase-fdw-ntp/releases/latest)
 
 ---
 
