@@ -1,0 +1,36 @@
+[package]
+name = "supabase-fdw-ntp"
+version = "0.2.0"
+edition = "2021"
+authors = ["Powabase Team"]
+description = "Supabase WASM Foreign Data Wrapper for German NTP Energy Market API"
+license = "Apache-2.0"
+repository = "https://github.com/powabase/supabase-fdw-ntp"
+keywords = ["fdw", "wasm", "supabase", "energy", "germany"]
+categories = ["database", "wasm"]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen-rt = { version = "0.41.0", features = ["bitflags"] }
+serde = { version = "1.0", default-features = false, features = ["derive", "alloc"] }
+serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
+csv = { version = "1.4", default-features = false }
+
+[profile.release]
+opt-level = "z"          # Optimize for size (critical for WASM)
+lto = true               # Link-time optimization
+strip = "debuginfo"      # Remove debug info
+codegen-units = 1        # Better optimization (slower compile, smaller binary)
+panic = "abort"          # Smaller binary (no unwinding)
+
+[package.metadata.component]
+package = "powabase:supabase-fdw-ntp"
+
+[package.metadata.component.target]
+path = "wit"
+
+[package.metadata.component.target.dependencies]
+"supabase:wrappers" = { path = "wit/deps/supabase-wrappers" }

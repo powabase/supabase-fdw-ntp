@@ -1,0 +1,66 @@
+# Rust
+/target
+**/*.rs.bk
+*.pdb
+Cargo.lock
+
+# WASM
+*.wasm
+*.wit.json
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Python (for test scripts)
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+.pytest_cache/
+
+# Build artifacts
+*.o
+*.so
+*.dylib
+*.dll
+
+# Documentation build
+/docs/_build/
+/docs/.doctrees/
+
+# Temporary files
+*.tmp
+*.bak
+*.log
+
+# Environment
+.env
+.env.*
+!.env.example
+.envrc
+
+# Credentials and secrets (CRITICAL - prevent credential leaks)
+test-auth.md
+**/test-auth.md
+test_fdw_setup.sql
+**/test_fdw_setup.sql
+*credentials*
+*secret*
+*.secret
+*.key
+*.pem
+*.p12
+.credentials
+oauth2_*.json
+client_secret*.json
+
+# Archived development materials
+_archived*/
+archive/
+archived/

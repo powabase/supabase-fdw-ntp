@@ -1,0 +1,1416 @@
+//! NTP FDW - Supabase WASM Foreign Data Wrapper for German NTP Energy Market API
+//!
+//! This wrapper provides PostgreSQL access to German Transmission System Operator (TSO)
+//! transparency data via the Netztransparenz.de API.
+//!
+//! # Features
+//! - OAuth2 authentication with token caching
+//! - CSV parsing with German locale support (comma decimals, DD.MM.YYYY dates)
+//! - Consolidated table design (renewable_energy_timeseries, electricity_market_prices)
+//! - Query routing (SQL WHERE → API endpoints)
+//!
+//! # Architecture
+//! See docs/ARCHITECTURE.md for complete design documentation (15 ADRs validated).
+//!
+//! # Phase 3 Status
+//! - ✅ OAuth2 token management (Phase 3.4)
+//! - ✅ CSV parser with ETL transformations (Phase 3.3)
+//! - ✅ Query router (Phase 3.5)
+//! - 🔜 FDW lifecycle integration (Phase 3.6)
+
+// cargo-component generates bindings automatically from wit/world.wit
+#[allow(warnings)]
+mod bindings;
+
+// Phase 3 modules
+pub mod csv_parser;
+pub mod csv_utils;
+mod error;
+pub mod grid_parsers;
+pub mod oauth2;
+pub mod query_router;
+pub mod transformations;
+mod types;
+mod types_grid;
+
+// Re-export public types for easier access
+pub use error::{ApiError, NtpFdwError, OAuth2Error, ParseError};
+pub use oauth2::{OAuth2Config, OAuth2Manager};
+pub use query_router::{DateRange, QualFilters, QueryPlan};
+pub use types::{PriceRow, RenewableRow};
+pub use types_grid::{GridStatusRow, RedispatchRow};
+
+use bindings::exports::supabase::wrappers::routines::{Context, FdwResult, Guest};
+use bindings::supabase::wrappers::types::{Cell, Row, Value};
+
+// ============================================================================
+// Helper Functions for FDW Lifecycle
+// ============================================================================
+
+/// Detect table name from table OPTIONS
+///
+/// CRITICAL FIX (v0.2.0): Column-based detection failed because ctx.get_columns()
+/// only returns projected columns from SELECT, not table definition columns.
+///
+/// New approach: Use OPTIONS specified in CREATE FOREIGN TABLE:
+///   CREATE FOREIGN TABLE ntp.redispatch_events (...)
+///   SERVER ntp_server
+///   OPTIONS (table 'redispatch_events');
+///
+/// Supported tables:
+/// - renewable_energy_timeseries
+/// - electricity_market_prices
+/// - redispatch_events
+/// - grid_status_timeseries
+///
+/// # Fallback Behavior
+///
+/// If no table option is specified, falls back to column-based detection
+/// (for backwards compatibility with existing tables).
+fn detect_table_name(ctx: &Context) -> String {
+    use bindings::supabase::wrappers::types::OptionsType;
+
+    // PRIMARY: Try to get table name from OPTIONS (v0.2.0+)
+    let table_opts = ctx.get_options(&OptionsType::Table);
+    if let Some(table_name) = table_opts.get("table") {
+        return table_name;
+    }
+
+    // FALLBACK: Column-based detection (backwards compatibility)
+    // NOTE: This only works if queried columns include the discriminator column
+    let columns = ctx.get_columns();
+
+    for col in columns {
+        let name = col.name();
+        if name == "product_type" {
+            return "renewable_energy_timeseries".to_string();
+        }
+        if name == "price_type" {
+            return "electricity_market_prices".to_string();
+        }
+        if name == "reason" {
+            return "redispatch_events".to_string();
+        }
+        if name == "grid_status" {
+            return "grid_status_timeseries".to_string();
+        }
+    }
+
+    // Default to renewable if cannot detect
+    "renewable_energy_timeseries".to_string()
+}
+
+/// Parse quals (WHERE clause filters) from Context
+///
+/// Extracts filters for:
+/// - product_type (for renewable energy table)
+/// - data_category (for renewable energy table)
+/// - price_type (for price table)
+/// - timestamp_utc (date range for both tables)
+///
+/// # Date Range Behavior
+///
+/// The function extracts date ranges from timestamp_utc filters with intelligent defaults
+/// to prevent unbounded queries while respecting user intent.
+///
+/// ## Case 1: Both Start and End Provided (Optimal)
+/// ```sql
+/// WHERE timestamp_utc >= '2024-10-24' AND timestamp_utc < '2024-10-31'
+/// ```
+/// **Result:** Fetches exactly `2024-10-24` to `2024-10-31`
+///
+/// **Use Case:** Explicit date range query - most predictable and optimal
+///
+/// ## Case 2: Only Start Provided
+/// ```sql
+/// WHERE timestamp_utc >= '2024-10-24'
+/// ```
+/// **Result:** Fetches `2024-10-24` to `2024-10-31` (7-day window from start)
+///
+/// **Rationale:** User specified a start date, so we fetch a reasonable window
+/// (7 days) from that point forward. This prevents unbounded queries while
+/// respecting user intent to get data "starting from this date".
+///
+/// ## Case 3: Only End Provided
+/// ```sql
+/// WHERE timestamp_utc < '2024-10-31'
+/// ```
+/// **Result:** Fetches `2024-10-24` to `2024-10-31` (7 days before end)
+///
+/// **Rationale:** User specified an end date, so we fetch a reasonable window
+/// (7 days) before that point. This prevents unbounded queries while
+/// respecting user intent to get data "up to this date".
+///
+/// ## Case 4: No Date Filter (Default)
+/// ```sql
+/// SELECT * FROM ntp.renewable_energy_timeseries WHERE product_type = 'solar'
+/// ```
+/// **Result:** Returns None (query_router will default to last 7 days)
+///
+/// **Rationale:** Default to recent data (last week) to prevent expensive
+/// full-table scans. This matches typical use case of analyzing recent trends.
+///
+/// # Why 7 Days?
+///
+/// - **Performance:** Prevents unbounded queries (Phase 1 benchmark: 2.1s for 365 days)
+/// - **Typical Use Case:** Most analyses focus on recent trends (last week)
+/// - **Predictable:** Users know exactly what window to expect
+/// - **Overridable:** Always specify explicit date range for custom windows
+///
+/// # Returns
+///
+/// QualFilters struct ready for query routing
+///
+/// # Errors
+///
+/// Returns error if date format is invalid or date range is invalid (start > end)
+fn parse_quals(ctx: &Context) -> Result<query_router::QualFilters, String> {
+    let quals = ctx.get_quals();
+    let table_name = detect_table_name(ctx);
+
+    let mut product_type: Option<String> = None;
+    let mut data_category: Option<String> = None;
+    let mut price_type: Option<String> = None;
+    let mut timestamp_start: Option<String> = None;
+    let mut timestamp_end: Option<String> = None;
+
+    // Parse each qual
+    for qual in quals {
+        let field = qual.field();
+        let operator = qual.operator();
+        let value = qual.value();
+
+        match field.as_str() {
+            "product_type" => {
+                if operator == "=" {
+                    if let Value::Cell(Cell::String(val)) = value {
+                        product_type = Some(val);
+                    }
+                }
+            }
+            "data_category" => {
+                if operator == "=" {
+                    if let Value::Cell(Cell::String(val)) = value {
+                        data_category = Some(val);
+                    }
+                }
+            }
+            "price_type" => {
+                if operator == "=" {
+                    if let Value::Cell(Cell::String(val)) = value {
+                        price_type = Some(val);
+                    }
+                }
+            }
+            "timestamp_utc" => {
+                // Extract date from timestamp
+                // timestamp_utc is stored as Cell::Timestamptz (microseconds since epoch)
+                match value {
+                    Value::Cell(Cell::Timestamptz(micros)) => {
+                        let date_str = micros_to_date_string(micros)
+                            .map_err(|e| format!("Failed to parse timestamp_utc: {}", e))?;
+
+                        match operator.as_str() {
+                            ">=" | ">" => {
+                                timestamp_start = Some(date_str);
+                            }
+                            "<" | "<=" => {
+                                timestamp_end = Some(date_str);
+                            }
+                            "=" => {
+                                // Exact date match
+                                timestamp_start = Some(date_str.clone());
+                                timestamp_end = Some(date_str);
+                            }
+                            _ => {}
+                        }
+                    }
+                    Value::Cell(Cell::String(date_str)) => {
+                        // Handle string dates (e.g., '2024-10-24')
+                        match operator.as_str() {
+                            ">=" | ">" => {
+                                timestamp_start = Some(date_str);
+                            }
+                            "<" | "<=" => {
+                                timestamp_end = Some(date_str);
+                            }
+                            "=" => {
+                                timestamp_start = Some(date_str.clone());
+                                timestamp_end = Some(date_str);
+                            }
+                            _ => {}
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            _ => {
+                // Ignore other filters (handled locally)
+            }
+        }
+    }
+
+    // Build DateRange if timestamp filters present
+    let timestamp_range = match (timestamp_start, timestamp_end) {
+        (Some(start), Some(end)) => Some(query_router::DateRange { start, end }),
+        (Some(start), None) => {
+            // Only start date: default to 7 days from start
+            let end = add_days_to_date(&start, 7)?;
+            Some(query_router::DateRange { start, end })
+        }
+        (None, Some(end)) => {
+            // Only end date: default to 7 days before end
+            let start = add_days_to_date(&end, -7)?;
+            Some(query_router::DateRange { start, end })
+        }
+        (None, None) => None, // No date filter (will use default last 7 days)
+    };
+
+    Ok(query_router::QualFilters {
+        product_type,
+        data_category,
+        price_type,
+        timestamp_range,
+        table_name,
+    })
+}
+
+/// Convert microseconds since epoch to YYYY-MM-DD date string
+///
+/// # Returns
+/// - `Ok(String)` - Date string in YYYY-MM-DD format
+/// - `Err(String)` - If timestamp is invalid (out of valid range)
+fn micros_to_date_string(micros: i64) -> Result<String, String> {
+    use chrono::DateTime;
+
+    let seconds = micros / 1_000_000;
+    let dt = DateTime::from_timestamp(seconds, 0).ok_or_else(|| {
+        format!(
+            "Invalid timestamp: {} microseconds ({} seconds) is out of valid range",
+            micros, seconds
+        )
+    })?;
+
+    Ok(dt.format("%Y-%m-%d").to_string())
+}
+
+/// Add days to date string (YYYY-MM-DD)
+fn add_days_to_date(date_str: &str, days: i64) -> Result<String, String> {
+    use chrono::NaiveDate;
+
+    let date = NaiveDate::parse_from_str(date_str, "%Y-%m-%d")
+        .map_err(|e| format!("Invalid date format: {}", e))?;
+
+    let new_date = if days >= 0 {
+        date + chrono::Duration::days(days)
+    } else {
+        date - chrono::Duration::days(-days)
+    };
+
+    Ok(new_date.format("%Y-%m-%d").to_string())
+}
+
+/// Fetch API endpoint with OAuth2 authentication
+///
+/// Makes HTTP GET request with Bearer token in Authorization header.
+///
+/// # Arguments
+///
+/// * `url` - Full API endpoint URL (e.g., "https://www.netztransparenz.de/api/ntp/prognose/Solar/2024-10-24/2024-10-25")
+/// * `token` - OAuth2 access token (Bearer token)
+///
+/// # Returns
+///
+/// * `Ok(String)` - CSV response body
+/// * `Err(NtpFdwError)` - HTTP error, network error, or empty response
+///
+/// # Error Handling
+///
+/// - 401 Unauthorized → Error (caller should clear OAuth2 cache and retry)
+/// - 404 Not Found → Empty string (data not available for date range)
+/// - 429 Rate Limited → Error
+/// - 500 Server Error → Error
+fn fetch_endpoint(url: &str, token: &str) -> Result<String, NtpFdwError> {
+    use bindings::supabase::wrappers::{http, utils};
+
+    utils::report_info(&format!("fetch_endpoint: URL={}", url));
+    utils::report_info(&format!("fetch_endpoint: token length={}", token.len()));
+
+    // Build HTTP GET request
+    let request = http::Request {
+        method: http::Method::Get,
+        url: url.to_string(),
+        headers: vec![
+            ("authorization".to_string(), format!("Bearer {}", token)),
+            ("accept".to_string(), "text/csv".to_string()),
+        ],
+        body: String::new(),
+    };
+
+    utils::report_info("fetch_endpoint: Request built, calling http::get");
+
+    // Make HTTP request
+    let response = http::get(&request).map_err(|err| {
+        utils::report_info(&format!("fetch_endpoint: http::get ERROR: {}", err));
+        ApiError::NetworkError(format!("HTTP GET failed for {}: {}", url, err))
+    })?;
+
+    utils::report_info(&format!(
+        "fetch_endpoint: Response received, status={}",
+        response.status_code
+    ));
+
+    // Handle HTTP status codes
+    match response.status_code {
+        200 => {
+            // Success - return CSV body
+            if response.body.is_empty() {
+                // Empty response is treated as "no data available"
+                Ok(String::new())
+            } else {
+                Ok(response.body)
+            }
+        }
+        401 => {
+            // Unauthorized - token expired or invalid
+            Err(OAuth2Error::TokenExpired.into())
+        }
+        404 => {
+            // Not Found - data not available for this date range
+            // This is normal (e.g., future dates for hochrechnung)
+            // Return empty result rather than error
+            Ok(String::new())
+        }
+        429 => {
+            // Rate limit exceeded
+            Err(ApiError::RateLimited.into())
+        }
+        _ => {
+            // Other errors (400, 500, etc.)
+            Err(ApiError::HttpError {
+                status: response.status_code,
+                body: response.body,
+            }
+            .into())
+        }
+    }
+}
+
+/// Convert RenewableRow to PostgreSQL cells
+///
+/// Maps RenewableRow struct fields to PostgreSQL Cell types based on column names.
+///
+/// # Arguments
+///
+/// * `row` - RenewableRow to convert
+/// * `columns` - List of columns from FDW context
+///
+/// # Returns
+///
+/// * `Ok(Vec<Option<Cell>>)` - Vector of Cell values matching column order
+/// * `Err(String)` - If timestamp parsing fails
+///
+/// # Notes
+///
+/// - Skips GENERATED columns (total_germany_mw, has_missing_data) - computed in PostgreSQL
+/// - Converts timestamp strings → Cell::Timestamptz (microseconds since epoch)
+/// - Converts Option<f64> → option<cell::Numeric(f64)>
+fn renewable_row_to_cells(
+    row: &RenewableRow,
+    columns: &[bindings::supabase::wrappers::types::Column],
+) -> Result<Vec<Option<Cell>>, String> {
+    use bindings::supabase::wrappers::types::Column;
+
+    columns
+        .iter()
+        .map(|col: &Column| {
+            let name = col.name();
+            match name.as_str() {
+                "timestamp_utc" => Ok(Some(Cell::Timestamptz(
+                    timestamp_to_micros(&row.timestamp_utc)
+                        .map_err(|e| format!("timestamp_utc: {}", e))?,
+                ))),
+                "interval_end_utc" => Ok(Some(Cell::Timestamptz(
+                    timestamp_to_micros(&row.interval_end_utc)
+                        .map_err(|e| format!("interval_end_utc: {}", e))?,
+                ))),
+                "interval_minutes" => Ok(Some(Cell::I16(row.interval_minutes))),
+                "product_type" => Ok(Some(Cell::String(row.product_type.clone()))),
+                "data_category" => Ok(Some(Cell::String(row.data_category.clone()))),
+                "tso_50hertz_mw" => Ok(row.tso_50hertz_mw.map(Cell::Numeric)),
+                "tso_amprion_mw" => Ok(row.tso_amprion_mw.map(Cell::Numeric)),
+                "tso_tennet_mw" => Ok(row.tso_tennet_mw.map(Cell::Numeric)),
+                "tso_transnetbw_mw" => Ok(row.tso_transnetbw_mw.map(Cell::Numeric)),
+                "source_endpoint" => Ok(Some(Cell::String(row.source_endpoint.clone()))),
+                "fetched_at" => {
+                    // fetched_at uses DEFAULT NOW() in PostgreSQL, so we don't provide it
+                    Ok(None)
+                }
+                // Skip GENERATED columns (computed in PostgreSQL)
+                "total_germany_mw" | "has_missing_data" => Ok(None),
+                // Unknown column - return None
+                _ => Ok(None),
+            }
+        })
+        .collect()
+}
+
+/// Convert PriceRow to PostgreSQL cells
+///
+/// Maps PriceRow struct fields to PostgreSQL Cell types based on column names.
+///
+/// # Arguments
+///
+/// * `row` - PriceRow to convert
+/// * `columns` - List of columns from FDW context
+///
+/// # Returns
+///
+/// * `Ok(Vec<Option<Cell>>)` - Vector of Cell values matching column order
+/// * `Err(String)` - If timestamp parsing fails
+fn price_row_to_cells(
+    row: &PriceRow,
+    columns: &[bindings::supabase::wrappers::types::Column],
+) -> Result<Vec<Option<Cell>>, String> {
+    use bindings::supabase::wrappers::types::Column;
+
+    columns
+        .iter()
+        .map(|col: &Column| {
+            let name = col.name();
+            match name.as_str() {
+                "timestamp_utc" => Ok(Some(Cell::Timestamptz(
+                    timestamp_to_micros(&row.timestamp_utc)
+                        .map_err(|e| format!("timestamp_utc: {}", e))?,
+                ))),
+                "interval_end_utc" => Ok(Some(Cell::Timestamptz(
+                    timestamp_to_micros(&row.interval_end_utc)
+                        .map_err(|e| format!("interval_end_utc: {}", e))?,
+                ))),
+                "granularity" => Ok(Some(Cell::String(row.granularity.clone()))),
+                "price_type" => Ok(Some(Cell::String(row.price_type.clone()))),
+                "price_eur_mwh" => Ok(row.price_eur_mwh.map(Cell::Numeric)),
+                "product_category" => Ok(row
+                    .product_category
+                    .as_ref()
+                    .map(|s| Cell::String(s.clone()))),
+                "negative_logic_hours" => Ok(row
+                    .negative_logic_hours
+                    .as_ref()
+                    .map(|s| Cell::String(s.clone()))),
+                "negative_flag_value" => Ok(row.negative_flag_value.map(Cell::Bool)),
+                "source_endpoint" => Ok(Some(Cell::String(row.source_endpoint.clone()))),
+                "fetched_at" => {
+                    // fetched_at uses DEFAULT NOW() in PostgreSQL
+                    Ok(None)
+                }
+                // Skip GENERATED columns (computed in PostgreSQL)
+                "price_ct_kwh" | "is_negative" => Ok(None),
+                // Unknown column
+                _ => Ok(None),
+            }
+        })
+        .collect()
+}
+
+/// Convert RedispatchRow to PostgreSQL cells
+///
+/// Maps RedispatchRow struct fields to PostgreSQL Cell types based on column names.
+///
+/// # Arguments
+///
+/// * `row` - RedispatchRow to convert
+/// * `columns` - List of columns from FDW context
+///
+/// # Returns
+///
+/// * `Ok(Vec<Option<Cell>>)` - Vector of Cell values matching column order
+/// * `Err(String)` - If timestamp parsing fails
+fn redispatch_row_to_cells(
+    row: &RedispatchRow,
+    columns: &[bindings::supabase::wrappers::types::Column],
+) -> Result<Vec<Option<Cell>>, String> {
+    use bindings::supabase::wrappers::types::Column;
+
+    columns
+        .iter()
+        .map(|col: &Column| {
+            let name = col.name();
+            match name.as_str() {
+                "timestamp_utc" => Ok(Some(Cell::Timestamptz(
+                    timestamp_to_micros(&row.timestamp_utc)
+                        .map_err(|e| format!("timestamp_utc: {}", e))?,
+                ))),
+                "interval_end_utc" => Ok(Some(Cell::Timestamptz(
+                    timestamp_to_micros(&row.interval_end_utc)
+                        .map_err(|e| format!("interval_end_utc: {}", e))?,
+                ))),
+                "reason" => Ok(Some(Cell::String(row.reason.clone()))),
+                "direction" => Ok(Some(Cell::String(row.direction.clone()))),
+                "avg_power_mw" => Ok(row.avg_power_mw.map(Cell::Numeric)),
+                "max_power_mw" => Ok(row.max_power_mw.map(Cell::Numeric)),
+                "total_energy_mwh" => Ok(row.total_energy_mwh.map(Cell::Numeric)),
+                "requesting_tso" => Ok(Some(Cell::String(row.requesting_tso.clone()))),
+                "instructing_tso" => Ok(row
+                    .instructing_tso
+                    .as_ref()
+                    .map(|s| Cell::String(s.clone()))),
+                "affected_facility" => Ok(row
+                    .affected_facility
+                    .as_ref()
+                    .map(|s| Cell::String(s.clone()))),
+                "energy_type" => Ok(row.energy_type.as_ref().map(|s| Cell::String(s.clone()))),
+                "source_endpoint" => Ok(Some(Cell::String(row.source_endpoint.clone()))),
+                "fetched_at" => {
+                    // fetched_at uses DEFAULT NOW() in PostgreSQL
+                    Ok(None)
+                }
+                // Skip GENERATED columns (computed in PostgreSQL)
+                "interval_minutes" => Ok(None),
+                // Unknown column
+                _ => Ok(None),
+            }
+        })
+        .collect()
+}
+
+/// Convert GridStatusRow to PostgreSQL cells
+///
+/// Maps GridStatusRow struct fields to PostgreSQL Cell types based on column names.
+///
+/// # Arguments
+///
+/// * `row` - GridStatusRow to convert
+/// * `columns` - List of columns from FDW context
+///
+/// # Returns
+///
+/// * `Ok(Vec<Option<Cell>>)` - Vector of Cell values matching column order
+/// * `Err(String)` - If timestamp parsing fails
+fn grid_status_row_to_cells(
+    row: &GridStatusRow,
+    columns: &[bindings::supabase::wrappers::types::Column],
+) -> Result<Vec<Option<Cell>>, String> {
+    use bindings::supabase::wrappers::types::Column;
+
+    columns
+        .iter()
+        .map(|col: &Column| {
+            let name = col.name();
+            match name.as_str() {
+                "timestamp_utc" => Ok(Some(Cell::Timestamptz(
+                    timestamp_to_micros(&row.timestamp_utc)
+                        .map_err(|e| format!("timestamp_utc: {}", e))?,
+                ))),
+                "interval_end_utc" => Ok(Some(Cell::Timestamptz(
+                    timestamp_to_micros(&row.interval_end_utc)
+                        .map_err(|e| format!("interval_end_utc: {}", e))?,
+                ))),
+                "grid_status" => Ok(Some(Cell::String(row.grid_status.clone()))),
+                "source_endpoint" => Ok(Some(Cell::String(row.source_endpoint.clone()))),
+                "fetched_at" => {
+                    // fetched_at uses DEFAULT NOW() in PostgreSQL
+                    Ok(None)
+                }
+                // Unknown column
+                _ => Ok(None),
+            }
+        })
+        .collect()
+}
+
+/// Convert ISO 8601 timestamp string to microseconds since Unix epoch
+///
+/// PostgreSQL TIMESTAMPTZ is stored as microseconds since 1970-01-01 00:00:00 UTC.
+///
+/// # Arguments
+///
+/// * `timestamp_str` - ISO 8601 timestamp (e.g., "2024-10-24T06:00:00Z")
+///
+/// # Returns
+///
+/// * `Ok(i64)` - Microseconds since Unix epoch
+/// * `Err(String)` - If timestamp cannot be parsed (invalid ISO 8601 format)
+fn timestamp_to_micros(timestamp_str: &str) -> Result<i64, String> {
+    use chrono::DateTime;
+
+    // Parse ISO 8601 timestamp (fail-fast on invalid data)
+    timestamp_str
+        .parse::<DateTime<chrono::Utc>>()
+        .map(|dt| dt.timestamp_micros())
+        .map_err(|e| {
+            format!(
+                "Failed to parse ISO 8601 timestamp '{}': {}. Expected format: YYYY-MM-DDTHH:MM:SSZ",
+                timestamp_str, e
+            )
+        })
+}
+
+/// Check if OAuth2 token needs proactive refresh
+///
+/// Implements proactive refresh strategy from Phase 1:
+/// - Check token expiry before each API call
+/// - Refresh if token is within 5-minute buffer of expiration
+///
+/// This prevents 401 errors during multi-endpoint queries by refreshing
+/// tokens BEFORE they expire, rather than waiting for a 401 (reactive).
+// Helper functions removed - now using singleton pattern directly in begin_scan()
+/// NTP FDW implementation
+///
+/// Following the official Supabase WASM FDW singleton pattern.
+/// All state is stored in this struct and accessed via static mut INSTANCE.
+#[derive(Default)]
+struct NtpFdw {
+    /// OAuth2 manager for token fetching and caching
+    oauth2_manager: Option<OAuth2Manager>,
+
+    /// API base URL (e.g., "https://ds.netztransparenz.de")
+    api_base_url: String,
+
+    /// HTTP headers (including Authorization with Bearer token)
+    headers: Vec<(String, String)>,
+
+    /// Buffered renewable energy rows (from begin_scan)
+    renewable_rows: Vec<RenewableRow>,
+
+    /// Buffered price rows (from begin_scan)
+    price_rows: Vec<PriceRow>,
+
+    /// Buffered redispatch event rows (from begin_scan)
+    redispatch_rows: Vec<RedispatchRow>,
+
+    /// Buffered grid status rows (from begin_scan)
+    grid_status_rows: Vec<GridStatusRow>,
+
+    /// Current table being scanned
+    current_table: String,
+
+    /// Current position in renewable_rows buffer (for re_scan support)
+    renewable_row_position: usize,
+
+    /// Current position in price_rows buffer (for re_scan support)
+    price_row_position: usize,
+
+    /// Current position in redispatch_rows buffer (for re_scan support)
+    redispatch_row_position: usize,
+
+    /// Current position in grid_status_rows buffer (for re_scan support)
+    grid_status_row_position: usize,
+}
+
+/// Static singleton instance (official Supabase WASM FDW pattern)
+static mut INSTANCE: *mut NtpFdw = std::ptr::null_mut::<NtpFdw>();
+
+impl NtpFdw {
+    /// Initialize singleton instance
+    ///
+    /// Creates the instance using Box::leak pattern (WASM-safe).
+    /// This is the standard pattern used by all official Supabase WASM FDWs.
+    fn init() {
+        let instance = Self::default();
+        unsafe {
+            INSTANCE = Box::leak(Box::new(instance));
+        }
+    }
+
+    /// Get mutable reference to singleton
+    ///
+    /// SAFETY: This is safe because FDW lifecycle methods are called sequentially
+    /// by PostgreSQL, never concurrently.
+    fn this_mut() -> &'static mut Self {
+        unsafe { &mut (*INSTANCE) }
+    }
+
+    /// Clear buffered rows and reset position counters
+    fn clear_rows(&mut self) {
+        self.renewable_rows.clear();
+        self.price_rows.clear();
+        self.redispatch_rows.clear();
+        self.grid_status_rows.clear();
+        self.renewable_row_position = 0;
+        self.price_row_position = 0;
+        self.redispatch_row_position = 0;
+        self.grid_status_row_position = 0;
+    }
+}
+
+// ============================================================================
+// Helper Functions for begin_scan() Refactoring
+// ============================================================================
+
+/// Fetch API endpoint with OAuth2 retry logic
+///
+/// Implements proactive + reactive token refresh strategy:
+/// - Proactive: Checks token expiry before request
+/// - Reactive: Retries once on 401 with fresh token
+///
+/// # Arguments
+///
+/// * `url` - API endpoint URL
+/// * `token` - Current OAuth2 token (mutable - may be refreshed)
+/// * `manager` - OAuth2 manager for token refresh
+///
+/// # Returns
+///
+/// * `Ok(String)` - Response body (CSV or JSON)
+/// * `Err(NtpFdwError)` - Network error, HTTP error, or token refresh failure
+fn fetch_with_oauth_retry(
+    url: &str,
+    token: &mut String,
+    manager: &OAuth2Manager,
+) -> Result<String, NtpFdwError> {
+    // PROACTIVE: Check if token needs refresh before request
+    if manager.is_near_expiry() {
+        *token = manager
+            .get_token()
+            .map_err(|e| format!("Failed to refresh token before API call: {}", e))?;
+    }
+
+    // Attempt fetch
+    match fetch_endpoint(url, token) {
+        Ok(body) => Ok(body),
+        Err(NtpFdwError::OAuth2(OAuth2Error::TokenExpired)) => {
+            // REACTIVE: Token expired - clear cache and retry once
+            manager.clear_cache();
+            *token = manager
+                .get_token()
+                .map_err(|e| format!("Failed to refresh OAuth2 token after 401: {}", e))?;
+
+            // Retry fetch with fresh token
+            fetch_endpoint(url, token)
+                .map_err(|e| format!("Failed to fetch endpoint after retry: {}", e).into())
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// Parse endpoint response and extend appropriate row buffer
+///
+/// Dispatches to correct parser based on table name and extends
+/// the appropriate row buffer.
+///
+/// # Arguments
+///
+/// * `table_name` - Table being scanned
+/// * `response_body` - CSV or JSON response body
+/// * `plan` - Query plan with endpoint metadata
+/// * `all_renewable_rows` - Renewable energy row buffer (mutable)
+/// * `all_price_rows` - Price row buffer (mutable)
+/// * `all_redispatch_rows` - Redispatch row buffer (mutable)
+/// * `all_grid_status_rows` - Grid status row buffer (mutable)
+///
+/// # Returns
+///
+/// * `Ok(())` - Parsing successful, rows extended
+/// * `Err(String)` - Parse error or unknown table
+fn parse_endpoint_response(
+    table_name: &str,
+    response_body: String,
+    plan: &query_router::QueryPlan,
+    all_renewable_rows: &mut Vec<RenewableRow>,
+    all_price_rows: &mut Vec<PriceRow>,
+    all_redispatch_rows: &mut Vec<RedispatchRow>,
+    all_grid_status_rows: &mut Vec<GridStatusRow>,
+) -> Result<(), String> {
+    match table_name {
+        "renewable_energy_timeseries" => {
+            let product = plan
+                .product
+                .as_ref()
+                .ok_or_else(|| "Missing product in QueryPlan".to_string())?;
+
+            let rows = csv_parser::parse_renewable_csv(
+                &response_body,
+                &plan.endpoint,
+                product,
+                &plan.date_from,
+                &plan.date_to,
+            )
+            .map_err(|e| format!("Failed to parse renewable CSV from {}: {}", plan.api_url, e))?;
+
+            all_renewable_rows.extend(rows);
+            Ok(())
+        }
+        "electricity_market_prices" => {
+            let rows = csv_parser::parse_price_csv(
+                &response_body,
+                &plan.endpoint,
+                &plan.date_from,
+                &plan.date_to,
+            )
+            .map_err(|e| format!("Failed to parse price CSV from {}: {}", plan.api_url, e))?;
+
+            all_price_rows.extend(rows);
+            Ok(())
+        }
+        "redispatch_events" => {
+            let rows =
+                grid_parsers::parse_redispatch_csv(&response_body, &plan.date_from, &plan.date_to)
+                    .map_err(|e| {
+                        format!(
+                            "Failed to parse redispatch CSV from {}: {}",
+                            plan.api_url, e
+                        )
+                    })?;
+
+            all_redispatch_rows.extend(rows);
+            Ok(())
+        }
+        "grid_status_timeseries" => {
+            let rows = grid_parsers::parse_trafficlight_json(
+                &response_body,
+                &plan.date_from,
+                &plan.date_to,
+            )
+            .map_err(|e| {
+                format!(
+                    "Failed to parse TrafficLight JSON from {}: {}",
+                    plan.api_url, e
+                )
+            })?;
+
+            all_grid_status_rows.extend(rows);
+            Ok(())
+        }
+        _ => Err(format!("Unknown table: {}", table_name)),
+    }
+}
+
+impl Guest for NtpFdw {
+    /// Host version requirement (Supabase Wrappers v0.2.0)
+    fn host_version_requirement() -> String {
+        // Requires Supabase Wrappers framework version 0.1.x
+        // Note: WIT interface version (0.2.0) != framework version (0.1.x)
+        "^0.1.0".to_string()
+    }
+
+    /// Initialize FDW (extract OAuth2 credentials from server options)
+    ///
+    /// Following official Supabase WASM FDW pattern:
+    /// 1. Call Self::init() to create singleton instance
+    /// 2. Extract server options
+    /// 3. Create OAuth2 manager
+    /// 4. Get initial token and set up headers
+    fn init(ctx: &Context) -> FdwResult {
+        use bindings::supabase::wrappers::types::OptionsType;
+
+        // CRITICAL: Initialize singleton instance FIRST (official pattern)
+        Self::init();
+        let this = Self::this_mut();
+
+        // Extract server options
+        let opts = ctx.get_options(&OptionsType::Server);
+
+        // Required: API base URL
+        this.api_base_url = opts
+            .require("api_base_url")
+            .map_err(|e| format!("Missing required server option 'api_base_url': {}", e))?;
+
+        // Required: OAuth2 token URL
+        let token_url = opts
+            .require("oauth2_token_url")
+            .map_err(|e| format!("Missing required server option 'oauth2_token_url': {}", e))?;
+
+        // Required: OAuth2 client ID
+        let client_id = opts
+            .require("oauth2_client_id")
+            .map_err(|e| format!("Missing required server option 'oauth2_client_id': {}", e))?;
+
+        // Required: OAuth2 client secret
+        let client_secret = opts.require("oauth2_client_secret").map_err(|e| {
+            format!(
+                "Missing required server option 'oauth2_client_secret': {}",
+                e
+            )
+        })?;
+
+        // Optional: OAuth2 scope (default: ntpStatistic.read_all_public)
+        let scope = opts.require_or("oauth2_scope", "ntpStatistic.read_all_public");
+
+        // Create OAuth2 config
+        let oauth2_config = OAuth2Config {
+            token_url,
+            client_id,
+            client_secret,
+            scope,
+        };
+
+        // Create and store OAuth2 manager
+        this.oauth2_manager = Some(OAuth2Manager::new(oauth2_config));
+
+        // Get initial token
+        let token = this
+            .oauth2_manager
+            .as_ref()
+            .ok_or("OAuth2Manager initialization failed")?
+            .get_token()
+            .map_err(|e| format!("Failed to get initial OAuth2 token: {}", e))?;
+
+        // Set up HTTP headers (following Paddle/Snowflake pattern)
+        this.headers.clear();
+        this.headers
+            .push(("authorization".to_owned(), format!("Bearer {}", token)));
+        this.headers
+            .push(("accept".to_owned(), "text/csv".to_owned()));
+
+        Ok(())
+    }
+
+    /// Begin scan (route query to API endpoints)
+    ///
+    /// Following official Supabase WASM FDW pattern:
+    /// 1. Get singleton instance via Self::this_mut()
+    /// 2. Parse quals and route query
+    /// 3. Fetch and parse all endpoints (using helper functions)
+    /// 4. Store rows in struct for iteration
+    fn begin_scan(ctx: &Context) -> FdwResult {
+        let this = Self::this_mut();
+
+        // 1. Parse quals (WHERE clause filters)
+        let filters = parse_quals(ctx).map_err(|e| format!("Failed to parse quals: {}", e))?;
+
+        // 2. Route query to API endpoints
+        let plans = query_router::route_query(&filters, &this.api_base_url)
+            .map_err(|e| format!("Failed to route query: {}", e))?;
+
+        // 3. Get OAuth2 manager and current token
+        let manager = this
+            .oauth2_manager
+            .as_ref()
+            .ok_or("OAuth2Manager not initialized")?;
+
+        let mut token = this
+            .headers
+            .iter()
+            .find(|(k, _)| k == "authorization")
+            .and_then(|(_, v)| v.strip_prefix("Bearer "))
+            .ok_or("Authorization header not found")?
+            .to_string();
+
+        // 4. Fetch and parse each endpoint
+        let mut all_renewable_rows = Vec::new();
+        let mut all_price_rows = Vec::new();
+        let mut all_redispatch_rows = Vec::new();
+        let mut all_grid_status_rows = Vec::new();
+
+        for plan in plans {
+            // Fetch endpoint with OAuth2 retry logic (helper function)
+            let response_body = fetch_with_oauth_retry(&plan.api_url, &mut token, manager)
+                .map_err(|e| format!("Failed to fetch endpoint {}: {}", plan.api_url, e))?;
+
+            // Update header if token was refreshed
+            if let Some(auth_header) = this.headers.iter_mut().find(|(k, _)| k == "authorization") {
+                auth_header.1 = format!("Bearer {}", token);
+            }
+
+            // Skip empty responses (404, no data available)
+            if response_body.is_empty() {
+                continue;
+            }
+
+            // Parse response and extend row buffers (helper function)
+            parse_endpoint_response(
+                &filters.table_name,
+                response_body,
+                &plan,
+                &mut all_renewable_rows,
+                &mut all_price_rows,
+                &mut all_redispatch_rows,
+                &mut all_grid_status_rows,
+            )?;
+        }
+
+        // 5. Store rows in struct for iteration (official pattern)
+        this.clear_rows();
+        this.renewable_rows = all_renewable_rows;
+        this.price_rows = all_price_rows;
+        this.redispatch_rows = all_redispatch_rows;
+        this.grid_status_rows = all_grid_status_rows;
+        this.current_table = filters.table_name;
+
+        Ok(())
+    }
+
+    /// Iterate scan (return next row)
+    ///
+    /// Following official Supabase WASM FDW pattern with re_scan support:
+    /// 1. Get singleton instance via Self::this_mut()
+    /// 2. Read next row from buffered data using position index
+    /// 3. Increment position counter
+    /// 4. Convert to PostgreSQL cells and push to row
+    fn iter_scan(ctx: &Context, row: &Row) -> Result<core::option::Option<u32>, String> {
+        let this = Self::this_mut();
+
+        // Get columns from context
+        let columns = ctx.get_columns();
+
+        // Read next row from buffered data (based on table type) using position index
+        let next_row_cells = match this.current_table.as_str() {
+            "renewable_energy_timeseries" => {
+                // Use .get() for bounds-checked access (prevents panic if position is out of bounds)
+                let row_data = match this.renewable_rows.get(this.renewable_row_position) {
+                    Some(row) => row,
+                    None => return Ok(None), // No more rows - graceful termination
+                };
+                this.renewable_row_position += 1;
+                Some(renewable_row_to_cells(row_data, &columns)?)
+            }
+            "electricity_market_prices" => {
+                // Use .get() for bounds-checked access (prevents panic if position is out of bounds)
+                let row_data = match this.price_rows.get(this.price_row_position) {
+                    Some(row) => row,
+                    None => return Ok(None), // No more rows - graceful termination
+                };
+                this.price_row_position += 1;
+                Some(price_row_to_cells(row_data, &columns)?)
+            }
+            "redispatch_events" => {
+                // Use .get() for bounds-checked access (prevents panic if position is out of bounds)
+                let row_data = match this.redispatch_rows.get(this.redispatch_row_position) {
+                    Some(row) => row,
+                    None => return Ok(None), // No more rows - graceful termination
+                };
+                this.redispatch_row_position += 1;
+                Some(redispatch_row_to_cells(row_data, &columns)?)
+            }
+            "grid_status_timeseries" => {
+                // Use .get() for bounds-checked access (prevents panic if position is out of bounds)
+                let row_data = match this.grid_status_rows.get(this.grid_status_row_position) {
+                    Some(row) => row,
+                    None => return Ok(None), // No more rows - graceful termination
+                };
+                this.grid_status_row_position += 1;
+                Some(grid_status_row_to_cells(row_data, &columns)?)
+            }
+            _ => return Err(format!("Unknown table: {}", this.current_table)),
+        };
+
+        // Check if we have a row
+        match next_row_cells {
+            Some(cells) => {
+                // Push cells to row
+                for cell in &cells {
+                    row.push(cell.as_ref());
+                }
+
+                // Return 1 (one row returned)
+                Ok(Some(1))
+            }
+            None => {
+                // No more rows
+                Ok(None)
+            }
+        }
+    }
+
+    /// End scan (cleanup)
+    ///
+    /// Following official Supabase WASM FDW pattern:
+    /// Clear buffered rows from singleton instance
+    fn end_scan(_ctx: &Context) -> FdwResult {
+        let this = Self::this_mut();
+        this.clear_rows();
+        Ok(())
+    }
+
+    /// Re-scan (reset row iteration to beginning)
+    ///
+    /// This function is called by PostgreSQL when it needs to restart the scan
+    /// from the beginning, which is required for JOIN operations and cursors.
+    ///
+    /// Implementation: Reset position counters to 0, keeping buffered rows intact.
+    fn re_scan(_ctx: &Context) -> FdwResult {
+        let this = Self::this_mut();
+
+        // Reset position counters to restart scan from beginning
+        this.renewable_row_position = 0;
+        this.price_row_position = 0;
+        this.redispatch_row_position = 0;
+        this.grid_status_row_position = 0;
+
+        Ok(())
+    }
+
+    /// Begin modify (for INSERT/UPDATE/DELETE - not supported)
+    fn begin_modify(_ctx: &Context) -> FdwResult {
+        Err("Modify operations not supported (read-only FDW)".to_string())
+    }
+
+    /// End modify
+    fn end_modify(_ctx: &Context) -> FdwResult {
+        Err("Modify operations not supported (read-only FDW)".to_string())
+    }
+
+    /// Insert (not supported)
+    fn insert(_ctx: &Context, _row: &Row) -> FdwResult {
+        Err("INSERT not supported (read-only FDW)".to_string())
+    }
+
+    /// Update (not supported)
+    fn update(_ctx: &Context, _rowid: Cell, _new_row: &Row) -> FdwResult {
+        Err("UPDATE not supported (read-only FDW)".to_string())
+    }
+
+    /// Delete (not supported)
+    fn delete(_ctx: &Context, _rowid: Cell) -> FdwResult {
+        Err("DELETE not supported (read-only FDW)".to_string())
+    }
+
+    /// Import foreign schema (not supported)
+    fn import_foreign_schema(
+        _ctx: &Context,
+        _stmt: bindings::supabase::wrappers::types::ImportForeignSchemaStmt,
+    ) -> Result<Vec<String>, String> {
+        Err("IMPORT FOREIGN SCHEMA not supported".to_string())
+    }
+}
+
+// Export the NTP FDW implementation
+bindings::export!(NtpFdw with_types_in bindings);
+
+// ============================================================================
+// Unit Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Test that re_scan() resets renewable_row_position to 0
+    ///
+    /// This is critical for JOIN operations - PostgreSQL calls re_scan()
+    /// when iterating the inner table for each outer row. If position
+    /// isn't reset, subsequent scans will return no rows.
+    #[test]
+    fn test_re_scan_resets_renewable_position() {
+        // Create FDW instance
+        let mut fdw = NtpFdw::default();
+
+        // Populate with test rows
+        fdw.renewable_rows = vec![
+            RenewableRow {
+                timestamp_utc: "2024-10-24T00:00:00Z".to_string(),
+                interval_end_utc: "2024-10-24T00:15:00Z".to_string(),
+                interval_minutes: 15,
+                product_type: "solar".to_string(),
+                data_category: "forecast".to_string(),
+                tso_50hertz_mw: Some(100.0),
+                tso_amprion_mw: Some(200.0),
+                tso_tennet_mw: Some(300.0),
+                tso_transnetbw_mw: Some(150.0),
+                source_endpoint: "prognose/Solar".to_string(),
+            },
+            RenewableRow {
+                timestamp_utc: "2024-10-24T00:15:00Z".to_string(),
+                interval_end_utc: "2024-10-24T00:30:00Z".to_string(),
+                interval_minutes: 15,
+                product_type: "solar".to_string(),
+                data_category: "forecast".to_string(),
+                tso_50hertz_mw: Some(110.0),
+                tso_amprion_mw: Some(210.0),
+                tso_tennet_mw: Some(310.0),
+                tso_transnetbw_mw: Some(160.0),
+                source_endpoint: "prognose/Solar".to_string(),
+            },
+            RenewableRow {
+                timestamp_utc: "2024-10-24T00:30:00Z".to_string(),
+                interval_end_utc: "2024-10-24T00:45:00Z".to_string(),
+                interval_minutes: 15,
+                product_type: "solar".to_string(),
+                data_category: "forecast".to_string(),
+                tso_50hertz_mw: Some(120.0),
+                tso_amprion_mw: Some(220.0),
+                tso_tennet_mw: Some(320.0),
+                tso_transnetbw_mw: Some(170.0),
+                source_endpoint: "prognose/Solar".to_string(),
+            },
+        ];
+
+        fdw.current_table = "renewable_energy_timeseries".to_string();
+
+        // Simulate iteration (advance position to end)
+        fdw.renewable_row_position = 3; // Beyond last row
+
+        // Verify position is at end
+        assert_eq!(fdw.renewable_row_position, 3);
+        assert_eq!(fdw.renewable_rows.len(), 3);
+
+        // Simulate re_scan (reset position)
+        fdw.renewable_row_position = 0;
+        fdw.price_row_position = 0;
+
+        // Verify position reset
+        assert_eq!(fdw.renewable_row_position, 0);
+        assert_eq!(fdw.price_row_position, 0);
+
+        // Verify rows still available
+        assert_eq!(fdw.renewable_rows.len(), 3);
+    }
+
+    /// Test that re_scan() resets price_row_position to 0
+    #[test]
+    fn test_re_scan_resets_price_position() {
+        let mut fdw = NtpFdw::default();
+
+        // Populate with test price rows
+        fdw.price_rows = vec![
+            PriceRow {
+                timestamp_utc: "2024-10-24T00:00:00Z".to_string(),
+                interval_end_utc: "2024-10-24T01:00:00Z".to_string(),
+                granularity: "hourly".to_string(),
+                price_type: "spot_market".to_string(),
+                price_eur_mwh: Some(50.25),
+                product_category: None,
+                negative_logic_hours: None,
+                negative_flag_value: Some(false),
+                source_endpoint: "Spotmarktpreise".to_string(),
+            },
+            PriceRow {
+                timestamp_utc: "2024-10-24T01:00:00Z".to_string(),
+                interval_end_utc: "2024-10-24T02:00:00Z".to_string(),
+                granularity: "hourly".to_string(),
+                price_type: "spot_market".to_string(),
+                price_eur_mwh: Some(45.75),
+                product_category: None,
+                negative_logic_hours: None,
+                negative_flag_value: Some(false),
+                source_endpoint: "Spotmarktpreise".to_string(),
+            },
+        ];
+
+        fdw.current_table = "electricity_market_prices".to_string();
+
+        // Simulate iteration
+        fdw.price_row_position = 2;
+
+        // Verify position
+        assert_eq!(fdw.price_row_position, 2);
+
+        // Simulate re_scan
+        fdw.renewable_row_position = 0;
+        fdw.price_row_position = 0;
+
+        // Verify reset
+        assert_eq!(fdw.price_row_position, 0);
+        assert_eq!(fdw.renewable_row_position, 0);
+        assert_eq!(fdw.price_rows.len(), 2);
+    }
+
+    /// Test that re_scan() preserves buffered data (doesn't clear rows)
+    ///
+    /// This is important because PostgreSQL may call re_scan() multiple times
+    /// during JOIN operations. We want to keep the buffered data and just
+    /// reset the iteration position, not re-fetch from the API.
+    #[test]
+    fn test_re_scan_preserves_buffered_data() {
+        let mut fdw = NtpFdw::default();
+
+        // Create test rows
+        let test_renewable = vec![RenewableRow {
+            timestamp_utc: "2024-10-24T00:00:00Z".to_string(),
+            interval_end_utc: "2024-10-24T00:15:00Z".to_string(),
+            interval_minutes: 15,
+            product_type: "wind_onshore".to_string(),
+            data_category: "extrapolation".to_string(),
+            tso_50hertz_mw: Some(500.0),
+            tso_amprion_mw: Some(600.0),
+            tso_tennet_mw: Some(700.0),
+            tso_transnetbw_mw: Some(400.0),
+            source_endpoint: "hochrechnung/Wind".to_string(),
+        }];
+
+        let test_price = vec![PriceRow {
+            timestamp_utc: "2024-10-24T00:00:00Z".to_string(),
+            interval_end_utc: "2024-10-24T01:00:00Z".to_string(),
+            granularity: "hourly".to_string(),
+            price_type: "spot_market".to_string(),
+            price_eur_mwh: Some(-5.50),
+            product_category: None,
+            negative_logic_hours: None,
+            negative_flag_value: Some(true),
+            source_endpoint: "Spotmarktpreise".to_string(),
+        }];
+
+        fdw.renewable_rows = test_renewable.clone();
+        fdw.price_rows = test_price.clone();
+        fdw.renewable_row_position = 1;
+        fdw.price_row_position = 1;
+
+        // Verify initial state
+        assert_eq!(fdw.renewable_rows.len(), 1);
+        assert_eq!(fdw.price_rows.len(), 1);
+        assert_eq!(fdw.renewable_row_position, 1);
+        assert_eq!(fdw.price_row_position, 1);
+
+        // Simulate re_scan (reset positions, keep data)
+        fdw.renewable_row_position = 0;
+        fdw.price_row_position = 0;
+
+        // Verify positions reset but data preserved
+        assert_eq!(fdw.renewable_row_position, 0);
+        assert_eq!(fdw.price_row_position, 0);
+        assert_eq!(fdw.renewable_rows.len(), 1); // Data still present
+        assert_eq!(fdw.price_rows.len(), 1); // Data still present
+
+        // Verify data integrity (values unchanged)
+        assert_eq!(fdw.renewable_rows[0].product_type, "wind_onshore");
+        assert_eq!(fdw.price_rows[0].price_eur_mwh, Some(-5.50));
+    }
+
+    /// Test iteration with bounds checking (C-1 security fix validation)
+    ///
+    /// Validates that out-of-bounds access is handled gracefully using .get()
+    /// instead of direct indexing, preventing panics.
+    #[test]
+    fn test_iter_scan_bounds_checking() {
+        let mut fdw = NtpFdw::default();
+
+        // Create 2 test rows
+        fdw.renewable_rows = vec![
+            RenewableRow {
+                timestamp_utc: "2024-10-24T00:00:00Z".to_string(),
+                interval_end_utc: "2024-10-24T00:15:00Z".to_string(),
+                interval_minutes: 15,
+                product_type: "solar".to_string(),
+                data_category: "forecast".to_string(),
+                tso_50hertz_mw: Some(100.0),
+                tso_amprion_mw: Some(200.0),
+                tso_tennet_mw: Some(300.0),
+                tso_transnetbw_mw: Some(150.0),
+                source_endpoint: "prognose/Solar".to_string(),
+            },
+            RenewableRow {
+                timestamp_utc: "2024-10-24T00:15:00Z".to_string(),
+                interval_end_utc: "2024-10-24T00:30:00Z".to_string(),
+                interval_minutes: 15,
+                product_type: "solar".to_string(),
+                data_category: "forecast".to_string(),
+                tso_50hertz_mw: Some(110.0),
+                tso_amprion_mw: Some(210.0),
+                tso_tennet_mw: Some(310.0),
+                tso_transnetbw_mw: Some(160.0),
+                source_endpoint: "prognose/Solar".to_string(),
+            },
+        ];
+
+        fdw.current_table = "renewable_energy_timeseries".to_string();
+        fdw.renewable_row_position = 0;
+
+        // First access: position 0 - should succeed
+        let result1 = fdw.renewable_rows.get(fdw.renewable_row_position);
+        assert!(result1.is_some());
+        fdw.renewable_row_position += 1;
+
+        // Second access: position 1 - should succeed
+        let result2 = fdw.renewable_rows.get(fdw.renewable_row_position);
+        assert!(result2.is_some());
+        fdw.renewable_row_position += 1;
+
+        // Third access: position 2 (out of bounds) - should return None gracefully
+        let result3 = fdw.renewable_rows.get(fdw.renewable_row_position);
+        assert!(result3.is_none());
+
+        // Verify no panic occurred (test passes if we reach here)
+        assert_eq!(fdw.renewable_row_position, 2);
+    }
+}

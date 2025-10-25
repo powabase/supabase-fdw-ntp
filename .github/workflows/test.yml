@@ -1,0 +1,148 @@
+name: Test & Lint
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+  pull_request:
+    branches:
+      - main
+      - develop
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  lint:
+    name: Lint & Format
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+          targets: wasm32-unknown-unknown
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "wasm-test"
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run clippy
+        run: cargo clippy --target wasm32-unknown-unknown -- -D warnings
+
+  test:
+    name: Run Unit Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "wasm-test"
+
+      - name: Run unit tests
+        run: cargo test --lib
+
+  build-test:
+    name: Build & Validate WASM
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "wasm-test"
+
+      - name: Install cargo-component
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-component@0.21.1
+
+      - name: Install wasm-tools
+        uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-tools
+
+      - name: Build WASM (debug)
+        run: |
+          cargo component build --target wasm32-unknown-unknown
+          ls -lh target/wasm32-unknown-unknown/debug/supabase_fdw_ntp.wasm
+
+      - name: Build WASM (release)
+        run: |
+          cargo component build --release --target wasm32-unknown-unknown
+          ls -lh target/wasm32-unknown-unknown/release/supabase_fdw_ntp.wasm
+
+      - name: Validate WASM structure
+        run: |
+          echo "Validating WASM binary..."
+
+          # Validate WASM is well-formed
+          wasm-tools validate target/wasm32-unknown-unknown/release/supabase_fdw_ntp.wasm
+
+          # CRITICAL: Check for WASI CLI imports (should be ZERO)
+          echo "Checking for WASI CLI imports (expecting: none)..."
+          WASI_CLI_COUNT=$(wasm-tools component wit target/wasm32-unknown-unknown/release/supabase_fdw_ntp.wasm | grep -c "wasi:cli" || echo "0")
+
+          if [ "$WASI_CLI_COUNT" -gt 0 ]; then
+            echo "❌ ERROR: Found $WASI_CLI_COUNT WASI CLI imports!"
+            echo "This means the build uses wasm32-wasip1 instead of wasm32-unknown-unknown"
+            wasm-tools component wit target/wasm32-unknown-unknown/release/supabase_fdw_ntp.wasm | grep wasi:cli
+            exit 1
+          fi
+
+          echo "✅ WASM validation passed - zero WASI CLI imports"
+
+          # Show expected imports
+          echo "WASM imports (should only see supabase:wrappers):"
+          wasm-tools component wit target/wasm32-unknown-unknown/release/supabase_fdw_ntp.wasm | head -15
+
+      - name: Check binary size
+        run: |
+          SIZE=$(stat -c%s target/wasm32-unknown-unknown/release/supabase_fdw_ntp.wasm 2>/dev/null || stat -f%z target/wasm32-unknown-unknown/release/supabase_fdw_ntp.wasm)
+          SIZE_KB=$((SIZE / 1024))
+          echo "Binary size: ${SIZE_KB} KB"
+
+          if [ $SIZE_KB -gt 300 ]; then
+            echo "⚠️  WARNING: Binary size ($SIZE_KB KB) is larger than expected (target: ~282 KB)"
+            echo "This may impact download performance on first query"
+          else
+            echo "✅ Binary size OK: ${SIZE_KB} KB"
+          fi
+
+          # Fail if binary is extremely large (indicates optimization issue)
+          if [ $SIZE_KB -gt 500 ]; then
+            echo "❌ ERROR: Binary size ($SIZE_KB KB) exceeds maximum (500 KB)"
+            echo "Check Cargo.toml [profile.release] optimizations"
+            exit 1
+          fi
+
+      - name: Upload WASM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ntp-fdw-wasm
+          path: target/wasm32-unknown-unknown/release/supabase_fdw_ntp.wasm
+          retention-days: 7

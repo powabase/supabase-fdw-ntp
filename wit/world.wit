@@ -1,0 +1,25 @@
+// NTP FDW WASM World Definition
+// Version: 0.2.0
+//
+// This defines the interface for the German NTP Energy Market API Foreign Data Wrapper.
+// 
+// Architecture:
+// - Consolidated tables (renewable_energy_timeseries, electricity_market_prices)
+// - OAuth2 authentication with token caching
+// - CSV parsing with German locale support (comma decimals, DD.MM.YYYY dates)
+// - Query routing (SQL WHERE → API endpoints)
+//
+// See docs/ARCHITECTURE.md for complete design documentation.
+
+package powabase:supabase-fdw-ntp@0.2.0;
+
+world ntp-fdw {
+    // Import Supabase Wrappers FDW interfaces
+    import supabase:wrappers/http@0.2.0;
+    import supabase:wrappers/stats@0.2.0;
+    import supabase:wrappers/time@0.2.0;
+    import supabase:wrappers/utils@0.2.0;
+
+    // Export FDW routines (our implementation)
+    export supabase:wrappers/routines@0.2.0;
+}
