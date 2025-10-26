@@ -77,47 +77,31 @@ fn detect_table_name(ctx: &Context) -> String {
     // Check all known OPTIONS keys (Bug #4 fix: support both 'table' and 'object')
     for key in ["table", "object", "name"] {
         if let Some(table_name) = table_opts.get(key) {
-            #[cfg(feature = "pg_test")]
-            eprintln!("[NTP FDW] Table detected via OPTIONS['{}'] = '{}'", key, table_name);
             return table_name;
         }
     }
 
     // FALLBACK: Column-based detection (backwards compatibility)
     // NOTE: This only works if queried columns include the discriminator column
-    #[cfg(feature = "pg_test")]
-    eprintln!("[NTP FDW] OPTIONS detection failed, falling back to column-based detection");
-
     let columns = ctx.get_columns();
 
     for col in columns {
         let name = col.name();
         if name == "product_type" {
-            #[cfg(feature = "pg_test")]
-            eprintln!("[NTP FDW] Table detected via column 'product_type': renewable_energy_timeseries");
             return "renewable_energy_timeseries".to_string();
         }
         if name == "price_type" {
-            #[cfg(feature = "pg_test")]
-            eprintln!("[NTP FDW] Table detected via column 'price_type': electricity_market_prices");
             return "electricity_market_prices".to_string();
         }
         if name == "reason" {
-            #[cfg(feature = "pg_test")]
-            eprintln!("[NTP FDW] Table detected via column 'reason': redispatch_events");
             return "redispatch_events".to_string();
         }
         if name == "grid_status" {
-            #[cfg(feature = "pg_test")]
-            eprintln!("[NTP FDW] Table detected via column 'grid_status': grid_status_timeseries");
             return "grid_status_timeseries".to_string();
         }
     }
 
-    // Default to renewable if cannot detect (with warning)
-    #[cfg(feature = "pg_test")]
-    eprintln!("[NTP FDW] WARNING: Cannot detect table from OPTIONS or columns, defaulting to renewable_energy_timeseries");
-
+    // Default to renewable if cannot detect
     "renewable_energy_timeseries".to_string()
 }
 
@@ -1174,13 +1158,14 @@ fn parse_endpoint_response(
                     if plan.endpoint == "Jahresmarktpraemie" {
                         // Annual endpoint uses pipe-delimited format, not CSV
                         let year = &plan.date_from[0..4]; // Extract YYYY from YYYY-MM-DD
-                        csv_parser::parse_annual_price_response(&response_body, year)
-                            .map_err(|e| {
+                        csv_parser::parse_annual_price_response(&response_body, year).map_err(
+                            |e| {
                                 format!(
                                     "Failed to parse annual price response from {}: {}",
                                     plan.api_url, e
                                 )
-                            })?
+                            },
+                        )?
                     } else if plan.endpoint == "marktpraemie" {
                         // Monthly endpoint uses CSV with UNPIVOT logic
                         csv_parser::parse_monthly_price_csv(

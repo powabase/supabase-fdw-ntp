@@ -389,9 +389,8 @@ pub fn parse_negative_price_flags_csv(
     }
 
     for result in reader.records() {
-        let record = result.map_err(|e| {
-            ParseError::CsvFormat(format!("Failed to read CSV record: {}", e))
-        })?;
+        let record = result
+            .map_err(|e| ParseError::CsvFormat(format!("Failed to read CSV record: {}", e)))?;
 
         // Parse combined datetime (format: "2024-10-20 00:00")
         let datum_zeit = get_field(&record, &headers, "Datum")?;
@@ -679,8 +678,13 @@ pub fn parse_monthly_price_csv(
         .clone();
 
     // Validate required columns
-    let required_columns = ["Monat", "MW-EPEX in ct/kWh", "MW Wind Onshore in ct/kWh",
-                           "MW Wind Offshore in ct/kWh", "MW Solar in ct/kWh"];
+    let required_columns = [
+        "Monat",
+        "MW-EPEX in ct/kWh",
+        "MW Wind Onshore in ct/kWh",
+        "MW Wind Offshore in ct/kWh",
+        "MW Solar in ct/kWh",
+    ];
     for col in &required_columns {
         if !headers.iter().any(|h| h == *col) {
             return Err(ParseError::MissingColumn(col.to_string()).into());
@@ -707,12 +711,12 @@ pub fn parse_monthly_price_csv(
             .into());
         }
 
-        let month: u32 = parts[0].parse().map_err(|_| {
-            ParseError::InvalidTimestamp(format!("Invalid month: {}", parts[0]))
-        })?;
-        let year: i32 = parts[1].parse().map_err(|_| {
-            ParseError::InvalidTimestamp(format!("Invalid year: {}", parts[1]))
-        })?;
+        let month: u32 = parts[0]
+            .parse()
+            .map_err(|_| ParseError::InvalidTimestamp(format!("Invalid month: {}", parts[0])))?;
+        let year: i32 = parts[1]
+            .parse()
+            .map_err(|_| ParseError::InvalidTimestamp(format!("Invalid year: {}", parts[1])))?;
 
         // Validate month range
         if !(1..=12).contains(&month) {
@@ -1157,7 +1161,8 @@ SIZE:142"#;
 
     #[test]
     fn test_parse_annual_price_response_product_normalization() {
-        let response = "JW;1,0\nJW Wind an Land;2,0\nJW Wind auf See;3,0\nJW Solar;4,0\nUnknown Category;5,0";
+        let response =
+            "JW;1,0\nJW Wind an Land;2,0\nJW Wind auf See;3,0\nJW Solar;4,0\nUnknown Category;5,0";
 
         let rows = parse_annual_price_response(response, "2024").unwrap();
 
@@ -1167,7 +1172,10 @@ SIZE:142"#;
         assert_eq!(rows[2].product_category, Some("wind_offshore".to_string()));
         assert_eq!(rows[3].product_category, Some("solar".to_string()));
         // Unknown category should be lowercased with underscores
-        assert_eq!(rows[4].product_category, Some("unknown_category".to_string()));
+        assert_eq!(
+            rows[4].product_category,
+            Some("unknown_category".to_string())
+        );
     }
 
     #[test]
