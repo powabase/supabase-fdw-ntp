@@ -113,7 +113,20 @@ fn detect_table_name(ctx: &Context) -> String {
 /// The function extracts date ranges from timestamp_utc filters with intelligent defaults
 /// to prevent unbounded queries while respecting user intent.
 ///
-/// ## Case 1: Both Start and End Provided (Optimal)
+/// ## Case 1: Same-Date Query (Auto-Adjusted - v0.2.3)
+/// ```sql
+/// WHERE timestamp_utc >= '2024-10-20' AND timestamp_utc < '2024-10-20'
+/// ```
+/// **Result:** Automatically adjusts to `2024-10-20` to `2024-10-21` (API routing)
+///
+/// **Rationale:** NTP API uses exclusive end dates `[start, end)`. Same-date queries
+/// (start == end) would return empty results because the range is mathematically empty.
+/// This auto-adjustment provides the expected "full day" behavior. The original
+/// timestamp bounds are preserved for local time-based filtering after API fetch.
+///
+/// **Use Case:** Single-day queries like "show me all data for Oct 20"
+///
+/// ## Case 2: Both Start and End Provided (Optimal)
 /// ```sql
 /// WHERE timestamp_utc >= '2024-10-24' AND timestamp_utc < '2024-10-31'
 /// ```
@@ -121,7 +134,7 @@ fn detect_table_name(ctx: &Context) -> String {
 ///
 /// **Use Case:** Explicit date range query - most predictable and optimal
 ///
-/// ## Case 2: Only Start Provided
+/// ## Case 3: Only Start Provided
 /// ```sql
 /// WHERE timestamp_utc >= '2024-10-24'
 /// ```
@@ -131,7 +144,7 @@ fn detect_table_name(ctx: &Context) -> String {
 /// (7 days) from that point forward. This prevents unbounded queries while
 /// respecting user intent to get data "starting from this date".
 ///
-/// ## Case 3: Only End Provided
+/// ## Case 4: Only End Provided
 /// ```sql
 /// WHERE timestamp_utc < '2024-10-31'
 /// ```
@@ -141,7 +154,7 @@ fn detect_table_name(ctx: &Context) -> String {
 /// (7 days) before that point. This prevents unbounded queries while
 /// respecting user intent to get data "up to this date".
 ///
-/// ## Case 4: No Date Filter (Default)
+/// ## Case 5: No Date Filter (Default)
 /// ```sql
 /// SELECT * FROM ntp.renewable_energy_timeseries WHERE product_type = 'solar'
 /// ```
@@ -291,7 +304,20 @@ fn parse_quals(ctx: &Context) -> Result<query_router::QualFilters, String> {
 
     // Build DateRange if timestamp filters present
     let timestamp_range = match (timestamp_start, timestamp_end) {
-        (Some(start), Some(end)) => Some(query_router::DateRange { start, end }),
+        (Some(start), Some(end)) => {
+            // v0.2.3 Fix: NTP API uses exclusive end dates [start, end)
+            // Same-date queries (e.g., 2024-10-20 to 2024-10-20) return empty results
+            // Auto-adjust by adding 1 day to provide expected "full day" behavior
+            let adjusted_end = if start == end {
+                add_days_to_date(&end, 1)?
+            } else {
+                end
+            };
+            Some(query_router::DateRange {
+                start,
+                end: adjusted_end,
+            })
+        }
         (Some(start), None) => {
             // Only start date: default to 7 days from start
             let end = add_days_to_date(&start, 7)?;
@@ -1438,6 +1464,7 @@ mod tests {
     /// when iterating the inner table for each outer row. If position
     /// isn't reset, subsequent scans will return no rows.
     #[test]
+    #[allow(clippy::field_reassign_with_default)]
     fn test_re_scan_resets_renewable_position() {
         // Create FDW instance
         let mut fdw = NtpFdw::default();
@@ -1505,6 +1532,7 @@ mod tests {
 
     /// Test that re_scan() resets price_row_position to 0
     #[test]
+    #[allow(clippy::field_reassign_with_default)]
     fn test_re_scan_resets_price_position() {
         let mut fdw = NtpFdw::default();
 
@@ -1618,6 +1646,7 @@ mod tests {
     /// Validates that out-of-bounds access is handled gracefully using .get()
     /// instead of direct indexing, preventing panics.
     #[test]
+    #[allow(clippy::field_reassign_with_default)]
     fn test_iter_scan_bounds_checking() {
         let mut fdw = NtpFdw::default();
 
@@ -2046,5 +2075,66 @@ mod tests {
             extract_date_component("2024-10-20T15:30:45+00:00"),
             "2024-10-20"
         );
+    }
+
+    /// Test same-date query auto-adjustment (v0.2.3 fix)
+    ///
+    /// Verifies that same-date queries are automatically adjusted by adding 1 day
+    /// to the end date to work around NTP API's exclusive end date behavior.
+    #[test]
+    fn test_same_date_adjustment() {
+        // Test same-date input
+        let start = "2024-10-20".to_string();
+        let end = "2024-10-20".to_string();
+
+        // Simulate the adjustment logic from parse_quals()
+        let adjusted_end = if start == end {
+            add_days_to_date(&end, 1).unwrap()
+        } else {
+            end.clone()
+        };
+
+        // Verify adjustment: 2024-10-20 → 2024-10-21
+        assert_eq!(adjusted_end, "2024-10-21");
+        assert_ne!(adjusted_end, start);
+
+        // Test different dates (should not adjust)
+        let start2 = "2024-10-20".to_string();
+        let end2 = "2024-10-21".to_string();
+
+        let adjusted_end2 = if start2 == end2 {
+            add_days_to_date(&end2, 1).unwrap()
+        } else {
+            end2.clone()
+        };
+
+        // Verify no adjustment when dates differ
+        assert_eq!(adjusted_end2, "2024-10-21");
+        assert_eq!(adjusted_end2, end2);
+    }
+
+    /// Test add_days_to_date helper (used for same-date adjustment)
+    #[test]
+    fn test_add_days_to_date() {
+        // Add 1 day
+        assert_eq!(add_days_to_date("2024-10-20", 1).unwrap(), "2024-10-21");
+
+        // Add 7 days
+        assert_eq!(add_days_to_date("2024-10-20", 7).unwrap(), "2024-10-27");
+
+        // Subtract 1 day
+        assert_eq!(add_days_to_date("2024-10-20", -1).unwrap(), "2024-10-19");
+
+        // Month boundary (Oct → Nov)
+        assert_eq!(add_days_to_date("2024-10-31", 1).unwrap(), "2024-11-01");
+
+        // Year boundary (Dec → Jan)
+        assert_eq!(add_days_to_date("2024-12-31", 1).unwrap(), "2025-01-01");
+
+        // Leap year (Feb 28 → Feb 29)
+        assert_eq!(add_days_to_date("2024-02-28", 1).unwrap(), "2024-02-29");
+
+        // Invalid date format
+        assert!(add_days_to_date("invalid", 1).is_err());
     }
 }

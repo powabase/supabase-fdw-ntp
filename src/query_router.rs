@@ -232,7 +232,7 @@ pub fn build_api_url(
 /// // Valid range
 /// assert!(validate_date_range("2024-10-24", "2024-10-25").is_ok());
 ///
-/// // Same day (valid)
+/// // Same day (valid - will be auto-adjusted by +1 day in parse_quals, v0.2.3)
 /// assert!(validate_date_range("2024-10-24", "2024-10-24").is_ok());
 ///
 /// // Invalid: date_from > date_to

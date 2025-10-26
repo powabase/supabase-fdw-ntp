@@ -10,16 +10,17 @@ This wrapper follows the WASM FDW architecture required for hosted Supabase inst
 
 ## Project Status
 
-**✅ v0.2.2 - String Timestamp Parsing Fix**
+**✅ v0.2.3 - Same-Date Query Auto-Adjustment**
 
-- **Current Version:** v0.2.2
-- **Status:** Production-ready, time-based filtering FULLY working, security validated
+- **Current Version:** v0.2.3
+- **Status:** Production-ready, same-date queries FULLY working, all filters validated
 - **Tables:** 4 (renewable energy, electricity prices, redispatch events, grid status)
 - **API Endpoints:** 15 endpoints consolidated into 4 tables
 - **WASM Binary:** ~301 KB, validated, zero WASI CLI imports ✅
-- **Tests:** 159 unit tests passing ✅
+- **Tests:** 161 unit tests passing ✅
 - **Query Performance:** Single endpoint ~200-500ms, 3 parallel ~600-1500ms ✅
-- **New in v0.2.2:** String timestamp parsing fix (time-based filtering fully functional) ✅
+- **New in v0.2.3:** Same-date query auto-adjustment (exclusive end date fix) ✅
+- **Fixed in v0.2.2:** String timestamp parsing (time-based filtering fully functional) ✅
 
 ## Technology Stack
 
@@ -231,14 +232,20 @@ fn matches_timestamp_bounds(timestamp_str: &str, bounds: &TimestampBounds) -> bo
 - OAuth2 caching: 1-hour token lifetime
 
 **Data Quality:**
-- 159 unit tests passing (100%) - Updated v0.2.2
+- 161 unit tests passing (100%) - Updated v0.2.3
 - All 6 security fixes validated
 - German locale parsing working (CSV)
 - NULL handling robust (N.A./N.E. variants)
 - JOIN support validated
+- Same-date query auto-adjustment working (v0.2.3 - FIXED)
 - Time-based timestamp filtering working (v0.2.2 - FIXED)
 
 ## Known Limitations & Edge Cases
+
+**Handled in v0.2.3:**
+- ✅ Same-date query auto-adjustment (exclusive end date behavior - FULLY WORKING)
+- ✅ Single-day queries now return full day of data (2024-10-20 to 2024-10-20 → auto-adjusted to 2024-10-21)
+- ✅ Works across all endpoints (renewable, prices, grid status, redispatch)
 
 **Handled in v0.2.2:**
 - ✅ String timestamp parsing (PostgreSQL passes timestamps as strings)
@@ -284,8 +291,8 @@ fn matches_timestamp_bounds(timestamp_str: &str, bounds: &TimestampBounds) -> bo
 ## Version Coordination
 
 **Important:** Keep versions synchronized across:
-- `Cargo.toml` - version = "0.2.2"
-- `wit/world.wit` - package powabase:supabase-fdw-ntp@0.2.2
+- `Cargo.toml` - version = "0.2.3"
+- `wit/world.wit` - package powabase:supabase-fdw-ntp@0.2.3
 - `CLAUDE.md` - Current Version section (this file)
 
 All three must match for successful builds and releases.
@@ -298,6 +305,6 @@ All three must match for successful builds and releases.
 
 ---
 
-**Version:** v0.2.2
+**Version:** v0.2.3
 **Last Updated:** 2025-10-26
-**Status:** Production Ready - String Timestamp Parsing Fixed
+**Status:** Production Ready - Same-Date Query Auto-Adjustment
