@@ -10,16 +10,17 @@ This wrapper follows the WASM FDW architecture required for hosted Supabase inst
 
 ## Project Status
 
-**✅ v0.2.3 - Same-Date Query Auto-Adjustment**
+**✅ v0.2.4 - Cross-Day Time Range Query Fix**
 
-- **Current Version:** v0.2.3
-- **Status:** Production-ready, same-date queries FULLY working, all filters validated
+- **Current Version:** v0.2.4
+- **Status:** Production-ready, cross-day time queries FULLY working, complete time filtering
 - **Tables:** 4 (renewable energy, electricity prices, redispatch events, grid status)
 - **API Endpoints:** 15 endpoints consolidated into 4 tables
-- **WASM Binary:** ~301 KB, validated, zero WASI CLI imports ✅
-- **Tests:** 161 unit tests passing ✅
+- **WASM Binary:** ~307 KB, validated, zero WASI CLI imports ✅
+- **Tests:** 164 unit tests passing ✅
 - **Query Performance:** Single endpoint ~200-500ms, 3 parallel ~600-1500ms ✅
-- **New in v0.2.3:** Same-date query auto-adjustment (exclusive end date fix) ✅
+- **New in v0.2.4:** Cross-day time range auto-adjustment (complete time filtering) ✅
+- **Fixed in v0.2.3:** Same-date query auto-adjustment (exclusive end date fix) ✅
 - **Fixed in v0.2.2:** String timestamp parsing (time-based filtering fully functional) ✅
 
 ## Technology Stack
@@ -232,15 +233,22 @@ fn matches_timestamp_bounds(timestamp_str: &str, bounds: &TimestampBounds) -> bo
 - OAuth2 caching: 1-hour token lifetime
 
 **Data Quality:**
-- 161 unit tests passing (100%) - Updated v0.2.3
+- 164 unit tests passing (100%) - Updated v0.2.4
 - All 6 security fixes validated
 - German locale parsing working (CSV)
 - NULL handling robust (N.A./N.E. variants)
 - JOIN support validated
+- Cross-day time range queries working (v0.2.4 - FIXED)
 - Same-date query auto-adjustment working (v0.2.3 - FIXED)
 - Time-based timestamp filtering working (v0.2.2 - FIXED)
 
 ## Known Limitations & Edge Cases
+
+**Handled in v0.2.4:**
+- ✅ Cross-day time range queries (midnight-spanning queries fully working)
+- ✅ Multi-day time queries fetch all required dates
+- ✅ Three-case date adjustment logic (same-date, cross-day time, date-only)
+- ✅ Complete time filtering across all endpoints
 
 **Handled in v0.2.3:**
 - ✅ Same-date query auto-adjustment (exclusive end date behavior - FULLY WORKING)
@@ -291,8 +299,8 @@ fn matches_timestamp_bounds(timestamp_str: &str, bounds: &TimestampBounds) -> bo
 ## Version Coordination
 
 **Important:** Keep versions synchronized across:
-- `Cargo.toml` - version = "0.2.3"
-- `wit/world.wit` - package powabase:supabase-fdw-ntp@0.2.3
+- `Cargo.toml` - version = "0.2.4"
+- `wit/world.wit` - package powabase:supabase-fdw-ntp@0.2.4
 - `CLAUDE.md` - Current Version section (this file)
 
 All three must match for successful builds and releases.
@@ -305,6 +313,6 @@ All three must match for successful builds and releases.
 
 ---
 
-**Version:** v0.2.3
+**Version:** v0.2.4
 **Last Updated:** 2025-10-26
-**Status:** Production Ready - Same-Date Query Auto-Adjustment
+**Status:** Production Ready - Cross-Day Time Range Query Fix

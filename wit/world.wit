@@ -1,5 +1,5 @@
 // NTP FDW WASM World Definition
-// Version: 0.2.3
+// Version: 0.2.4
 //
 // This defines the interface for the German NTP Energy Market API Foreign Data Wrapper.
 //
@@ -10,10 +10,11 @@
 // - Query routing (SQL WHERE → API endpoints)
 // - Two-phase timestamp filtering (v0.2.2+)
 // - Same-date query auto-adjustment (v0.2.3 - FIXED exclusive end date)
+// - Cross-day time range fix (v0.2.4 - FIXED partial results)
 //
 // See docs/ARCHITECTURE.md for complete design documentation.
 
-package powabase:supabase-fdw-ntp@0.2.3;
+package powabase:supabase-fdw-ntp@0.2.4;
 
 world ntp-fdw {
     // Import Supabase Wrappers FDW interfaces

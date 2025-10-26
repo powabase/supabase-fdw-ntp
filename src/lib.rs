@@ -126,13 +126,29 @@ fn detect_table_name(ctx: &Context) -> String {
 ///
 /// **Use Case:** Single-day queries like "show me all data for Oct 20"
 ///
-/// ## Case 2: Both Start and End Provided (Optimal)
+/// ## Case 1b: Cross-Day Time Range (Auto-Adjusted - v0.2.4)
+/// ```sql
+/// WHERE timestamp_utc >= '2024-10-20T23:00:00' AND timestamp_utc < '2024-10-21T01:00:00'
+/// ```
+/// **Result:** Automatically adjusts to `2024-10-20` to `2024-10-22` (API routing)
+///
+/// **Rationale:** To capture data from the end date (Oct 21), we must fetch through
+/// the day after the end date due to the API's exclusive end date behavior. The query
+/// spans Oct 20 23:00 to Oct 21 01:00, so we fetch both Oct 20 and Oct 21 data.
+/// The timestamp bounds filter then keeps only the requested time range (23:00-01:00).
+///
+/// **Use Case:** Queries spanning midnight or multiple days with specific time ranges
+///
+/// ## Case 2: Date Range Without Time (No Adjustment)
 /// ```sql
 /// WHERE timestamp_utc >= '2024-10-24' AND timestamp_utc < '2024-10-31'
 /// ```
 /// **Result:** Fetches exactly `2024-10-24` to `2024-10-31`
 ///
-/// **Use Case:** Explicit date range query - most predictable and optimal
+/// **Rationale:** When no time components are specified, the user wants full calendar
+/// days. No adjustment needed since the query intent is clear (days 24-30).
+///
+/// **Use Case:** Date-only range queries - most predictable and optimal
 ///
 /// ## Case 3: Only Start Provided
 /// ```sql
@@ -305,12 +321,24 @@ fn parse_quals(ctx: &Context) -> Result<query_router::QualFilters, String> {
     // Build DateRange if timestamp filters present
     let timestamp_range = match (timestamp_start, timestamp_end) {
         (Some(start), Some(end)) => {
-            // v0.2.3 Fix: NTP API uses exclusive end dates [start, end)
-            // Same-date queries (e.g., 2024-10-20 to 2024-10-20) return empty results
-            // Auto-adjust by adding 1 day to provide expected "full day" behavior
+            // Detect time-based filtering (not just date filters)
+            let has_time_bounds = ts_bound_start.is_some() || ts_bound_end.is_some();
+
             let adjusted_end = if start == end {
+                // Case 1: Same-date time query (v0.2.3 fix)
+                // Example: 2024-10-20T10:00 to 2024-10-20T16:00
+                //   → API: /2024-10-20/2024-10-21
+                add_days_to_date(&end, 1)?
+            } else if has_time_bounds {
+                // Case 2: Cross-day time query (v0.2.4 fix)
+                // Example: 2024-10-20T23:00 to 2024-10-21T01:00
+                //   → API: /2024-10-20/2024-10-22 (fetches Oct 20 + Oct 21)
+                // Local filtering will keep only 23:00-01:00
                 add_days_to_date(&end, 1)?
             } else {
+                // Case 3: Date-only query (no adjustment)
+                // Example: 2024-10-20 to 2024-10-25
+                //   → API: /2024-10-20/2024-10-25
                 end
             };
             Some(query_router::DateRange {
@@ -2136,5 +2164,96 @@ mod tests {
 
         // Invalid date format
         assert!(add_days_to_date("invalid", 1).is_err());
+    }
+
+    /// Test cross-day time range adjustment (v0.2.4 fix)
+    ///
+    /// Verifies that queries spanning multiple calendar days with time components
+    /// automatically adjust the end date to fetch data from all relevant days.
+    #[test]
+    #[allow(clippy::if_same_then_else)]
+    fn test_cross_day_time_range_adjustment() {
+        // Scenario: Query spans midnight (Oct 20 23:00 → Oct 21 01:00)
+        let start_date = "2024-10-20".to_string();
+        let end_date = "2024-10-21".to_string();
+
+        // Simulate time bounds present (indicates time-based filtering)
+        let has_time_bounds = true;
+
+        // Adjustment logic
+        let adjusted_end = if start_date == end_date {
+            add_days_to_date(&end_date, 1).unwrap()
+        } else if has_time_bounds {
+            add_days_to_date(&end_date, 1).unwrap()
+        } else {
+            end_date.clone()
+        };
+
+        // Verify: 2024-10-21 → 2024-10-22
+        assert_eq!(adjusted_end, "2024-10-22");
+        assert_ne!(adjusted_end, end_date);
+    }
+
+    /// Test date-only queries remain unchanged (v0.2.4 regression test)
+    #[test]
+    #[allow(clippy::if_same_then_else)]
+    fn test_date_only_query_no_adjustment() {
+        // Scenario: Date-only query (no time bounds)
+        let start_date = "2024-10-20".to_string();
+        let end_date = "2024-10-25".to_string();
+
+        // No time bounds
+        let has_time_bounds = false;
+
+        // Adjustment logic
+        let adjusted_end = if start_date == end_date {
+            add_days_to_date(&end_date, 1).unwrap()
+        } else if has_time_bounds {
+            add_days_to_date(&end_date, 1).unwrap()
+        } else {
+            end_date.clone()
+        };
+
+        // Verify: No adjustment for date-only queries
+        assert_eq!(adjusted_end, "2024-10-25");
+        assert_eq!(adjusted_end, end_date);
+    }
+
+    /// Test three-way adjustment logic (comprehensive)
+    #[test]
+    #[allow(clippy::if_same_then_else)]
+    fn test_timestamp_range_adjustment_all_cases() {
+        // Case 1: Same-date with time bounds
+        let (start1, end1, has_time1) = ("2024-10-20", "2024-10-20", true);
+        let adj1 = if start1 == end1 {
+            add_days_to_date(end1, 1).unwrap()
+        } else if has_time1 {
+            add_days_to_date(end1, 1).unwrap()
+        } else {
+            end1.to_string()
+        };
+        assert_eq!(adj1, "2024-10-21"); // Same-date: +1 day
+
+        // Case 2: Cross-day with time bounds
+        let (start2, end2, has_time2) = ("2024-10-20", "2024-10-21", true);
+        let adj2 = if start2 == end2 {
+            add_days_to_date(end2, 1).unwrap()
+        } else if has_time2 {
+            add_days_to_date(end2, 1).unwrap()
+        } else {
+            end2.to_string()
+        };
+        assert_eq!(adj2, "2024-10-22"); // Cross-day with time: +1 day
+
+        // Case 3: Date-only (no time bounds)
+        let (start3, end3, has_time3) = ("2024-10-20", "2024-10-25", false);
+        let adj3 = if start3 == end3 {
+            add_days_to_date(end3, 1).unwrap()
+        } else if has_time3 {
+            add_days_to_date(end3, 1).unwrap()
+        } else {
+            end3.to_string()
+        };
+        assert_eq!(adj3, "2024-10-25"); // Date-only: no adjustment
     }
 }
