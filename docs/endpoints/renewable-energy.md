@@ -17,7 +17,7 @@ The `renewable_energy_timeseries` endpoint consolidates all renewable energy pro
 - Real-time, forecast, and historical extrapolation data
 - Geographic scope: Germany (4 TSO control zones covering entire country)
 - Query time: ~500ms - 3 seconds (depending on filters)
-- API coverage: 9 endpoints consolidated (3 products × 3 data categories)
+- API coverage: 7 accessible endpoints (wind_offshore limited to online_actual only)
 
 ---
 
@@ -506,6 +506,15 @@ This is normal for:
 - **Products**: Solar, Wind Onshore, Wind Offshore
 - **Coverage**: Entire German power grid
 
+### Product Availability Limitations
+
+**Wind Offshore Restrictions:**
+- ✅ **Available:** `online_actual` (hourly actual generation)
+- ❌ **Not Available:** `forecast` and `extrapolation` (not provided by NTP API)
+- **Reason:** NTP API does not publish forecast/extrapolation data for offshore wind farms
+
+**All Other Product × Category Combinations:** Fully supported
+
 ---
 
 ## Related Documentation
@@ -520,4 +529,4 @@ This is normal for:
 
 ---
 
-**Built with NTP API** • **Powered by Supabase WASM FDW v0.2.0**
+**Built with NTP API** • **Powered by Supabase WASM FDW v0.2.9**

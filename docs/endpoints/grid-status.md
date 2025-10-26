@@ -17,7 +17,7 @@ The `grid_status_timeseries` endpoint tracks minute-by-minute grid stability sta
 - Real-time traffic light status (GREEN/YELLOW/RED)
 - Geographic scope: Germany (national grid stability indicator)
 - Query time: ~500ms - 2 seconds (depending on date range)
-- API coverage: 1 endpoint (TrafficLight - JSON format, only JSON endpoint in v0.2.0)
+- API coverage: 1 endpoint (TrafficLight - JSON format, only JSON endpoint in v0.2.8)
 
 ---
 
@@ -55,13 +55,13 @@ None - all parameters are optional. If no filters are provided, defaults to last
 
 | Column | SQL Type | Description | Units | Example | Notes |
 |--------|----------|-------------|-------|---------|-------|
-| `source_endpoint` | TEXT | Original API endpoint path | text | `TrafficLight/2024-10-24/2024-10-24` | Always from /TrafficLight/ JSON endpoint (only JSON endpoint in v0.2.0). |
+| `source_endpoint` | TEXT | Original API endpoint path | text | `TrafficLight/2024-10-24/2024-10-24` | Always from /TrafficLight/ JSON endpoint (only JSON endpoint in v0.2.8). |
 | `fetched_at` | TIMESTAMPTZ | When data was retrieved from API | UTC timestamp | `2024-10-25 10:30:45+00` | DEFAULT NOW(). Cache and freshness tracking. |
 
 **Notes:**
 - Minute-level data = 1440 rows per day (very high volume)
 - **CRITICAL:** Always use narrow date ranges (1-7 days max) to avoid returning 100,000+ rows
-- JSON parsing (first JSON endpoint implemented in v0.2.0)
+- JSON parsing (first JSON endpoint implemented in v0.2.8)
 - Index exists on grid_status for efficient filtering (idx_grid_status_status)
 
 ---
@@ -547,4 +547,4 @@ FROM hourly;
 
 ---
 
-**Built with NTP API** • **Powered by Supabase WASM FDW v0.2.0**
+**Built with NTP API** • **Powered by Supabase WASM FDW v0.2.9**

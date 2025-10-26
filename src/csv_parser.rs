@@ -421,33 +421,28 @@ pub fn parse_negative_price_flags_csv(
         let flag_4h = get_field(&record, &headers, "Stunde4")? == "1";
         let flag_6h = get_field(&record, &headers, "Stunde6")? == "1";
 
-        // Determine longest negative duration (priority: 6h > 4h > 3h > 1h)
-        let negative_logic_hours = if flag_6h {
-            Some("6h".to_string())
-        } else if flag_4h {
-            Some("4h".to_string())
-        } else if flag_3h {
-            Some("3h".to_string())
-        } else if flag_1h {
-            Some("1h".to_string())
-        } else {
-            None
-        };
+        // UNPIVOT: Create 4 rows per timestamp (one for each logic type)
+        // This allows users to query specific negative price logic durations
+        let logic_types = [
+            ("1h", flag_1h),
+            ("3h", flag_3h),
+            ("4h", flag_4h),
+            ("6h", flag_6h),
+        ];
 
-        // Check if any negative flag is set
-        let negative_flag_value = Some(flag_1h || flag_3h || flag_4h || flag_6h);
-
-        rows.push(PriceRow {
-            timestamp_utc,
-            interval_end_utc,
-            price_type: "negative_flag".to_string(),
-            granularity: "hourly".to_string(),
-            price_eur_mwh: None, // Not provided in NegativePreise CSV
-            product_category: None,
-            negative_logic_hours,
-            negative_flag_value,
-            source_endpoint: "NegativePreise".to_string(),
-        });
+        for (logic_hours, flag_value) in logic_types {
+            rows.push(PriceRow {
+                timestamp_utc: timestamp_utc.clone(),
+                interval_end_utc: interval_end_utc.clone(),
+                price_type: "negative_flag".to_string(),
+                granularity: "hourly".to_string(),
+                price_eur_mwh: None, // Not provided in NegativePreise CSV
+                product_category: None,
+                negative_logic_hours: Some(logic_hours.to_string()),
+                negative_flag_value: Some(flag_value),
+                source_endpoint: "NegativePreise".to_string(),
+            });
+        }
     }
 
     Ok(rows)
@@ -1318,5 +1313,139 @@ SIZE:142"#;
 
         let result = parse_monthly_price_csv(csv, "2024-01-01", "2024-12-31");
         assert!(result.is_err());
+    }
+
+    // ========================================================================
+    // parse_negative_price_flags_csv Tests
+    // ========================================================================
+
+    #[test]
+    fn test_parse_negative_price_flags_unpivot() {
+        // Test UNPIVOT transformation: 4 flag columns → 4 rows per timestamp
+        let csv = r#"Datum;Stunde1;Stunde3;Stunde4;Stunde6
+2024-10-20 00:00;0;1;1;1
+2024-10-20 01:00;1;1;0;0"#;
+
+        let rows = parse_negative_price_flags_csv(csv, "2024-10-20", "2024-10-21").unwrap();
+
+        // Should have 8 rows (2 timestamps × 4 logic types)
+        assert_eq!(rows.len(), 8);
+
+        // First timestamp should have all 4 logic types
+        let first_timestamp_rows: Vec<_> = rows
+            .iter()
+            .filter(|r| r.timestamp_utc == "2024-10-20T00:00:00Z")
+            .collect();
+        assert_eq!(first_timestamp_rows.len(), 4);
+
+        // Verify each logic type exists with correct flag values
+        let logic_1h = first_timestamp_rows
+            .iter()
+            .find(|r| r.negative_logic_hours.as_ref().unwrap() == "1h")
+            .unwrap();
+        assert_eq!(logic_1h.negative_flag_value, Some(false)); // 0 in CSV
+
+        let logic_3h = first_timestamp_rows
+            .iter()
+            .find(|r| r.negative_logic_hours.as_ref().unwrap() == "3h")
+            .unwrap();
+        assert_eq!(logic_3h.negative_flag_value, Some(true)); // 1 in CSV
+
+        let logic_4h = first_timestamp_rows
+            .iter()
+            .find(|r| r.negative_logic_hours.as_ref().unwrap() == "4h")
+            .unwrap();
+        assert_eq!(logic_4h.negative_flag_value, Some(true)); // 1 in CSV
+
+        let logic_6h = first_timestamp_rows
+            .iter()
+            .find(|r| r.negative_logic_hours.as_ref().unwrap() == "6h")
+            .unwrap();
+        assert_eq!(logic_6h.negative_flag_value, Some(true)); // 1 in CSV
+
+        // Second timestamp should also have all 4 logic types with different values
+        let second_timestamp_rows: Vec<_> = rows
+            .iter()
+            .filter(|r| r.timestamp_utc == "2024-10-20T01:00:00Z")
+            .collect();
+        assert_eq!(second_timestamp_rows.len(), 4);
+
+        let logic_1h_2 = second_timestamp_rows
+            .iter()
+            .find(|r| r.negative_logic_hours.as_ref().unwrap() == "1h")
+            .unwrap();
+        assert_eq!(logic_1h_2.negative_flag_value, Some(true)); // 1 in CSV
+
+        let logic_4h_2 = second_timestamp_rows
+            .iter()
+            .find(|r| r.negative_logic_hours.as_ref().unwrap() == "4h")
+            .unwrap();
+        assert_eq!(logic_4h_2.negative_flag_value, Some(false)); // 0 in CSV
+
+        // Verify other metadata is correct
+        assert_eq!(logic_1h.price_type, "negative_flag");
+        assert_eq!(logic_1h.granularity, "hourly");
+        assert_eq!(logic_1h.source_endpoint, "NegativePreise");
+        assert_eq!(logic_1h.interval_end_utc, "2024-10-20T01:00:00Z");
+    }
+
+    #[test]
+    fn test_parse_negative_price_flags_all_false() {
+        // Test all flags false (no negative prices detected)
+        let csv = r#"Datum;Stunde1;Stunde3;Stunde4;Stunde6
+2024-10-20 12:00;0;0;0;0"#;
+
+        let rows = parse_negative_price_flags_csv(csv, "2024-10-20", "2024-10-21").unwrap();
+
+        // Should still have 4 rows (UNPIVOT always creates 4 rows)
+        assert_eq!(rows.len(), 4);
+
+        // All should have false values
+        for row in &rows {
+            assert_eq!(row.negative_flag_value, Some(false));
+        }
+    }
+
+    #[test]
+    fn test_parse_negative_price_flags_all_true() {
+        // Test all flags true (severe negative price period)
+        let csv = r#"Datum;Stunde1;Stunde3;Stunde4;Stunde6
+2024-10-20 03:00;1;1;1;1"#;
+
+        let rows = parse_negative_price_flags_csv(csv, "2024-10-20", "2024-10-21").unwrap();
+
+        // Should have 4 rows
+        assert_eq!(rows.len(), 4);
+
+        // All should have true values
+        for row in &rows {
+            assert_eq!(row.negative_flag_value, Some(true));
+        }
+
+        // Verify all logic types present
+        let logic_types: Vec<String> = rows
+            .iter()
+            .map(|r| r.negative_logic_hours.as_ref().unwrap().clone())
+            .collect();
+        assert!(logic_types.contains(&"1h".to_string()));
+        assert!(logic_types.contains(&"3h".to_string()));
+        assert!(logic_types.contains(&"4h".to_string()));
+        assert!(logic_types.contains(&"6h".to_string()));
+    }
+
+    #[test]
+    fn test_parse_negative_price_flags_empty() {
+        let csv = "";
+        let result = parse_negative_price_flags_csv(csv, "2024-10-20", "2024-10-21");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_negative_price_flags_missing_column() {
+        let csv = r#"Datum;Stunde1;Stunde3
+2024-10-20 00:00;0;1"#;
+
+        let result = parse_negative_price_flags_csv(csv, "2024-10-20", "2024-10-21");
+        assert!(result.is_err()); // Should fail due to missing Stunde4 and Stunde6
     }
 }

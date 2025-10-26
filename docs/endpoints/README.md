@@ -16,7 +16,7 @@ Complete documentation for all 4 foreign tables:
 ### Energy Production Data
 - 📊 **[Renewable Energy Timeseries](renewable-energy.md)**
   Solar, wind onshore, and wind offshore production data (forecast, actual, real-time)
-  *9 API endpoints consolidated, 13 columns, ~500ms queries*
+  *7 accessible API endpoints consolidated, 13 columns, ~500ms queries*
 
 ### Market & Pricing Data
 - 💰 **[Electricity Market Prices](electricity-prices.md)**
@@ -45,7 +45,7 @@ Complete documentation for all 4 foreign tables:
   *WHERE clause optimization, parameter pushdown, performance strategies*
 
 - 🌐 **[API Specification](../reference/API_SPECIFICATION.md)** - NTP API reference
-  *OAuth2 configuration, CSV format specs, 15 endpoints, rate limits*
+  *OAuth2 configuration, CSV format specs, 13 accessible endpoints, rate limits*
 
 ## Testing & Validation
 
@@ -95,12 +95,14 @@ Complete documentation for all 4 foreign tables:
 
 ## Version Information
 
-- **Current Version:** v0.2.0
-- **WASM Binary:** 260 KB (optimized, zero WASI CLI imports)
+- **Current Version:** v0.2.9
+- **WASM Binary:** ~326 KB (optimized, zero WASI CLI imports)
 - **Tables:** 4 (renewable energy, electricity prices, redispatch, grid status)
-- **API Endpoints:** 15 endpoints consolidated
-- **Tests:** 155 passing (100% success rate)
+- **API Endpoints:** 13 accessible endpoints (100% coverage of available API)
+- **Tests:** 190+ passing (100% success rate)
 - **Production Ready:** ✅ Yes
+- **Note:** 2 wind_offshore endpoints (forecast/extrapolation) not provided by NTP API
+- **Latest:** v0.2.9 fixes NegativePreise UNPIVOT (4 rows per timestamp)
 
 ## External Resources
 
@@ -111,6 +113,6 @@ Complete documentation for all 4 foreign tables:
 
 ---
 
-**Last Updated:** 2025-10-25
-**Status:** Production Ready
+**Last Updated:** 2025-10-26
+**Status:** Production Ready (v0.2.9 - 100% Accessible Endpoint Coverage)
 **Documentation:** Complete

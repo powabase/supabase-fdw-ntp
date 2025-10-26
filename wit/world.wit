@@ -1,5 +1,5 @@
 // NTP FDW WASM World Definition
-// Version: 0.2.8
+// Version: 0.2.9
 //
 // This defines the interface for the German NTP Energy Market API Foreign Data Wrapper.
 //
@@ -15,10 +15,11 @@
 // - Production fixes (v0.2.6 - FIXED 2 bugs: YELLOW_NEG grid status, Jahresmarktpraemie URL construction)
 // - Annual data parser (v0.2.7 - FIXED Jahresmarktpraemie pipe-delimited format)
 // - Monthly premium parser (v0.2.8 - FIXED marktpraemie UNPIVOT logic, 100% endpoint coverage)
+// - NegativePreise UNPIVOT fix (v0.2.9 - FIXED 4 rows per timestamp, documentation update for 13 accessible endpoints)
 //
 // See docs/ARCHITECTURE.md for complete design documentation.
 
-package powabase:supabase-fdw-ntp@0.2.8;
+package powabase:supabase-fdw-ntp@0.2.9;
 
 world ntp-fdw {
     // Import Supabase Wrappers FDW interfaces

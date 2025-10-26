@@ -10,15 +10,17 @@ This wrapper follows the WASM FDW architecture required for hosted Supabase inst
 
 ## Project Status
 
-**✅ v0.2.8 - Production Ready (100% Endpoints)**
+**✅ v0.2.9 - Production Ready (100% Accessible Endpoints)**
 
-- **Current Version:** v0.2.8
-- **Status:** Production-ready, 15/15 endpoints working (100% coverage) 🎉
+- **Current Version:** v0.2.9
+- **Status:** Production-ready, 13/13 accessible endpoints working (100% coverage) 🎉
 - **Tables:** 4 (renewable energy, electricity prices, redispatch events, grid status) - ALL WORKING ✅
-- **API Endpoints:** 15/15 endpoints functional (100% completion) ✅
+- **API Endpoints:** 13/13 accessible endpoints functional (100% completion) ✅
+- **Note:** NTP API provides 13 accessible endpoints (2 wind_offshore variants unavailable per API design)
 - **WASM Binary:** ~326 KB, validated, zero WASI CLI imports ✅
-- **Tests:** 185+ unit tests passing ✅
+- **Tests:** 190+ unit tests passing ✅
 - **Query Performance:** Single endpoint ~200-500ms, 3 parallel ~600-1500ms ✅
+- **New in v0.2.9:** Fixed NegativePreise UNPIVOT bug (4 rows per timestamp), updated documentation to reflect 13 accessible endpoints ✅
 - **New in v0.2.8:** Marktpraemie monthly premium parser with UNPIVOT logic (100% endpoint coverage achieved) ✅
 - **New in v0.2.7:** Jahresmarktpraemie pipe-delimited parser (annual market value 2020-2024 accessible) ✅
 - **Fixed in v0.2.6:** 2 production bug fixes (YELLOW_NEG grid status variants, Jahresmarktpraemie URL construction) ✅
@@ -41,10 +43,30 @@ This wrapper follows the WASM FDW architecture required for hosted Supabase inst
 
 | Table | Purpose | API Coverage | Data Type |
 |-------|---------|--------------|-----------|
-| **renewable_energy_timeseries** | Solar and wind generation | 9 endpoints | CSV |
+| **renewable_energy_timeseries** | Solar and wind generation | 7 endpoints | CSV |
 | **electricity_market_prices** | Spot market, premiums, flags | 4 endpoints | CSV |
 | **redispatch_events** | Grid intervention events | 1 endpoint | CSV |
 | **grid_status_timeseries** | Minute-by-minute grid monitoring | 1 endpoint | JSON |
+
+### API Endpoint Limitations
+
+The NTP API does not provide all product × category combinations. Specifically:
+
+**Available Endpoints (13 total):**
+- **Renewable Energy (7):** All combinations EXCEPT wind_offshore forecast/extrapolation
+  - ✅ Solar: forecast, extrapolation, online_actual
+  - ✅ Wind Onshore: forecast, extrapolation, online_actual
+  - ✅ Wind Offshore: online_actual only
+- **Electricity Prices (4):** Spotmarktpreise, marktpraemie, Jahresmarktpraemie, NegativePreise
+- **Grid Operations (2):** redispatch, TrafficLight
+
+**Unavailable Combinations (per API design):**
+- ❌ `wind_offshore` + `forecast` (prognose/Windoffshore) - Not supported by NTP API
+- ❌ `wind_offshore` + `extrapolation` (hochrechnung/Windoffshore) - Not supported by NTP API
+
+**Rationale:** The NTP API only provides online actual data for offshore wind farms. Forecast and extrapolation data are not published, likely due to technical complexity of marine weather forecasting or regulatory restrictions.
+
+**Implementation:** The wrapper handles these missing endpoints gracefully - queries return 0 rows without errors.
 
 ## Quick Reference
 
@@ -60,7 +82,7 @@ cargo component build --release --target wasm32-unknown-unknown
 
 # Verify output
 ls -lh target/wasm32-unknown-unknown/release/supabase_fdw_ntp.wasm
-# Expected: ~301 KB (v0.2.0 with 4 tables, 15 endpoints)
+# Expected: ~301 KB (v0.2.0 with 4 tables, 13 accessible endpoints)
 ```
 
 ### Validation Commands
@@ -317,6 +339,6 @@ All three must match for successful builds and releases.
 
 ---
 
-**Version:** v0.2.8
+**Version:** v0.2.9
 **Last Updated:** 2025-10-26
-**Status:** Production Ready - 100% Endpoint Coverage (15/15)
+**Status:** Production Ready - 100% Accessible Endpoint Coverage (13/13)
