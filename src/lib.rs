@@ -71,32 +71,53 @@ fn detect_table_name(ctx: &Context) -> String {
     use bindings::supabase::wrappers::types::OptionsType;
 
     // PRIMARY: Try to get table name from OPTIONS (v0.2.0+)
+    // PostgreSQL foreign tables can use different OPTIONS keys ('table', 'object', 'name')
     let table_opts = ctx.get_options(&OptionsType::Table);
-    if let Some(table_name) = table_opts.get("table") {
-        return table_name;
+
+    // Check all known OPTIONS keys (Bug #4 fix: support both 'table' and 'object')
+    for key in ["table", "object", "name"] {
+        if let Some(table_name) = table_opts.get(key) {
+            #[cfg(feature = "pg_test")]
+            eprintln!("[NTP FDW] Table detected via OPTIONS['{}'] = '{}'", key, table_name);
+            return table_name;
+        }
     }
 
     // FALLBACK: Column-based detection (backwards compatibility)
     // NOTE: This only works if queried columns include the discriminator column
+    #[cfg(feature = "pg_test")]
+    eprintln!("[NTP FDW] OPTIONS detection failed, falling back to column-based detection");
+
     let columns = ctx.get_columns();
 
     for col in columns {
         let name = col.name();
         if name == "product_type" {
+            #[cfg(feature = "pg_test")]
+            eprintln!("[NTP FDW] Table detected via column 'product_type': renewable_energy_timeseries");
             return "renewable_energy_timeseries".to_string();
         }
         if name == "price_type" {
+            #[cfg(feature = "pg_test")]
+            eprintln!("[NTP FDW] Table detected via column 'price_type': electricity_market_prices");
             return "electricity_market_prices".to_string();
         }
         if name == "reason" {
+            #[cfg(feature = "pg_test")]
+            eprintln!("[NTP FDW] Table detected via column 'reason': redispatch_events");
             return "redispatch_events".to_string();
         }
         if name == "grid_status" {
+            #[cfg(feature = "pg_test")]
+            eprintln!("[NTP FDW] Table detected via column 'grid_status': grid_status_timeseries");
             return "grid_status_timeseries".to_string();
         }
     }
 
-    // Default to renewable if cannot detect
+    // Default to renewable if cannot detect (with warning)
+    #[cfg(feature = "pg_test")]
+    eprintln!("[NTP FDW] WARNING: Cannot detect table from OPTIONS or columns, defaulting to renewable_energy_timeseries");
+
     "renewable_energy_timeseries".to_string()
 }
 
@@ -745,8 +766,10 @@ fn renewable_row_to_cells(
                     // fetched_at uses DEFAULT NOW() in PostgreSQL, so we don't provide it
                     Ok(None)
                 }
-                // Skip GENERATED columns (computed in PostgreSQL)
-                "total_germany_mw" | "has_missing_data" => Ok(None),
+                // Bug #1 fix: PostgreSQL foreign tables cannot use GENERATED columns
+                // We must compute these values in Rust instead
+                "total_germany_mw" => Ok(Some(Cell::Numeric(row.total_germany_mw()))),
+                "has_missing_data" => Ok(Some(Cell::Bool(row.has_missing_data()))),
                 // Unknown column - return None
                 _ => Ok(None),
             }
@@ -803,8 +826,10 @@ fn price_row_to_cells(
                     // fetched_at uses DEFAULT NOW() in PostgreSQL
                     Ok(None)
                 }
-                // Skip GENERATED columns (computed in PostgreSQL)
-                "price_ct_kwh" | "is_negative" => Ok(None),
+                // Bug #3 fix: PostgreSQL foreign tables cannot use GENERATED columns
+                // We must compute these values in Rust instead
+                "price_ct_kwh" => Ok(row.price_ct_kwh().map(Cell::Numeric)),
+                "is_negative" => Ok(Some(Cell::Bool(row.is_negative()))),
                 // Unknown column
                 _ => Ok(None),
             }
@@ -1131,13 +1156,27 @@ fn parse_endpoint_response(
             Ok(())
         }
         "electricity_market_prices" => {
-            let rows = csv_parser::parse_price_csv(
-                &response_body,
-                &plan.endpoint,
-                &plan.date_from,
-                &plan.date_to,
-            )
-            .map_err(|e| format!("Failed to parse price CSV from {}: {}", plan.api_url, e))?;
+            // Bug #7 fix: Route to appropriate parser based on endpoint
+            let rows = match plan.endpoint.as_str() {
+                "NegativePreise" => csv_parser::parse_negative_price_flags_csv(
+                    &response_body,
+                    &plan.date_from,
+                    &plan.date_to,
+                )
+                .map_err(|e| {
+                    format!(
+                        "Failed to parse NegativePreise CSV from {}: {}",
+                        plan.api_url, e
+                    )
+                })?,
+                _ => csv_parser::parse_price_csv(
+                    &response_body,
+                    &plan.endpoint,
+                    &plan.date_from,
+                    &plan.date_to,
+                )
+                .map_err(|e| format!("Failed to parse price CSV from {}: {}", plan.api_url, e))?,
+            };
 
             all_price_rows.extend(rows);
             Ok(())

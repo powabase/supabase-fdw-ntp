@@ -35,7 +35,7 @@
 //! ```
 
 use crate::error::ParseError;
-use chrono::{DateTime, NaiveDate, NaiveTime};
+use chrono::{DateTime, Duration, NaiveDate, NaiveTime};
 
 /// Helper struct for TSO zone data
 ///
@@ -218,6 +218,85 @@ pub fn parse_timestamp(datum: &str, zeit: &str, timezone: &str) -> Result<String
 
     // Format as ISO 8601
     Ok(datetime.format("%Y-%m-%dT%H:%M:%SZ").to_string())
+}
+
+/// Parse interval timestamps with midnight-crossing detection (Bug #5 fix)
+///
+/// Handles the case where interval end time is <= start time, which indicates
+/// the interval crosses midnight (e.g., 23:45 - 00:00).
+///
+/// # Arguments
+///
+/// * `datum` - Date string (DD.MM.YYYY or YYYY-MM-DD)
+/// * `von` - Start time (HH:MM)
+/// * `bis` - End time (HH:MM)
+/// * `tz_von` - Start timezone (must be "UTC")
+/// * `tz_bis` - End timezone (must be "UTC")
+///
+/// # Returns
+///
+/// * `Ok((start_timestamp, end_timestamp))` - Both as ISO 8601 strings
+/// * `Err(ParseError)` - If parsing fails
+///
+/// # Examples
+///
+/// ```
+/// # use supabase_fdw_ntp::transformations::parse_interval_timestamps;
+/// // Normal interval (same day)
+/// let (start, end) = parse_interval_timestamps(
+///     "20.10.2024", "10:00", "11:00", "UTC", "UTC"
+/// ).unwrap();
+/// assert_eq!(start, "2024-10-20T10:00:00Z");
+/// assert_eq!(end, "2024-10-20T11:00:00Z");
+///
+/// // Midnight crossing (end time is before start time)
+/// let (start, end) = parse_interval_timestamps(
+///     "20.10.2024", "23:45", "00:00", "UTC", "UTC"
+/// ).unwrap();
+/// assert_eq!(start, "2024-10-20T23:45:00Z");
+/// assert_eq!(end, "2024-10-21T00:00:00Z");  // Next day!
+/// ```
+pub fn parse_interval_timestamps(
+    datum: &str,
+    von: &str,
+    bis: &str,
+    tz_von: &str,
+    tz_bis: &str,
+) -> Result<(String, String), ParseError> {
+    // Validate timezones
+    if tz_von != "UTC" || tz_bis != "UTC" {
+        return Err(ParseError::InvalidTimezone(format!(
+            "Expected UTC, got von={}, bis={}",
+            tz_von, tz_bis
+        )));
+    }
+
+    // Parse times to detect midnight crossing
+    let start_time = NaiveTime::parse_from_str(von, "%H:%M")
+        .map_err(|_| ParseError::InvalidTimestamp(format!("Invalid time: {}", von)))?;
+    let end_time = NaiveTime::parse_from_str(bis, "%H:%M")
+        .map_err(|_| ParseError::InvalidTimestamp(format!("Invalid time: {}", bis)))?;
+
+    // Parse base date (supports both German DD.MM.YYYY and ISO YYYY-MM-DD)
+    let base_date = NaiveDate::parse_from_str(datum, "%d.%m.%Y")
+        .or_else(|_| NaiveDate::parse_from_str(datum, "%Y-%m-%d"))
+        .map_err(|_| ParseError::InvalidTimestamp(format!("Invalid date: {}", datum)))?;
+
+    // Parse start timestamp (always uses base date)
+    let start_timestamp = parse_timestamp(datum, von, tz_von)?;
+
+    // Detect midnight crossing: if end_time <= start_time, assume next day
+    let end_date = if end_time <= start_time {
+        base_date + Duration::days(1)
+    } else {
+        base_date
+    };
+
+    // Format end date for parsing
+    let end_date_str = end_date.format("%d.%m.%Y").to_string();
+    let end_timestamp = parse_timestamp(&end_date_str, bis, tz_bis)?;
+
+    Ok((start_timestamp, end_timestamp))
 }
 
 // ============================================================================

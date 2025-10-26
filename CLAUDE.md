@@ -10,16 +10,17 @@ This wrapper follows the WASM FDW architecture required for hosted Supabase inst
 
 ## Project Status
 
-**✅ v0.2.4 - Cross-Day Time Range Query Fix**
+**✅ v0.2.5 - Critical Bug Fixes**
 
-- **Current Version:** v0.2.4
-- **Status:** Production-ready, cross-day time queries FULLY working, complete time filtering
+- **Current Version:** v0.2.5
+- **Status:** Production-ready, 5 critical bugs FIXED (table detection, GENERATED columns, midnight crossing, NegativePreise)
 - **Tables:** 4 (renewable energy, electricity prices, redispatch events, grid status)
 - **API Endpoints:** 15 endpoints consolidated into 4 tables
 - **WASM Binary:** ~307 KB, validated, zero WASI CLI imports ✅
-- **Tests:** 164 unit tests passing ✅
+- **Tests:** 164+ unit tests passing ✅
 - **Query Performance:** Single endpoint ~200-500ms, 3 parallel ~600-1500ms ✅
-- **New in v0.2.4:** Cross-day time range auto-adjustment (complete time filtering) ✅
+- **New in v0.2.5:** 5 critical bug fixes (redispatch aggregation, GENERATED columns, midnight crossing, NegativePreise parser, table detection) ✅
+- **Fixed in v0.2.4:** Cross-day time range auto-adjustment (complete time filtering) ✅
 - **Fixed in v0.2.3:** Same-date query auto-adjustment (exclusive end date fix) ✅
 - **Fixed in v0.2.2:** String timestamp parsing (time-based filtering fully functional) ✅
 
@@ -313,6 +314,6 @@ All three must match for successful builds and releases.
 
 ---
 
-**Version:** v0.2.4
+**Version:** v0.2.5
 **Last Updated:** 2025-10-26
-**Status:** Production Ready - Cross-Day Time Range Query Fix
+**Status:** Production Ready - Critical Bug Fixes

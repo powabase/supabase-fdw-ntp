@@ -187,9 +187,9 @@ pub fn parse_renewable_csv(
         let tz_von = get_field(&record, &headers, "Zeitzone von")?;
         let tz_bis = get_field(&record, &headers, "Zeitzone bis")?;
 
-        // Parse timestamps
-        let timestamp_utc = parse_timestamp(datum, von, tz_von)?;
-        let interval_end_utc = parse_timestamp(datum, bis, tz_bis)?;
+        // Parse timestamps with midnight-crossing detection (Bug #5 fix)
+        let (timestamp_utc, interval_end_utc) =
+            parse_interval_timestamps(datum, von, bis, tz_von, tz_bis)?;
         let interval_minutes = calculate_interval_minutes(&timestamp_utc, &interval_end_utc)?;
 
         // Extract TSO zone values
@@ -305,9 +305,9 @@ pub fn parse_price_csv(
         let tz_bis = get_field(&record, &headers, "Zeitzone bis")?;
         let price_ct_kwh = get_field(&record, &headers, "Spotmarktpreis in ct/kWh")?;
 
-        // Parse timestamps
-        let timestamp_utc = parse_timestamp(datum, von, tz_von)?;
-        let interval_end_utc = parse_timestamp(datum, bis, tz_bis)?;
+        // Parse timestamps with midnight-crossing detection (Bug #5 fix)
+        let (timestamp_utc, interval_end_utc) =
+            parse_interval_timestamps(datum, von, bis, tz_von, tz_bis)?;
 
         // Parse and convert price
         let price_ct = parse_german_decimal(price_ct_kwh)?;
@@ -323,6 +323,131 @@ pub fn parse_price_csv(
             negative_logic_hours: None,
             negative_flag_value: None,
             source_endpoint: source_endpoint.clone(),
+        });
+    }
+
+    Ok(rows)
+}
+
+/// Parse NegativePreise CSV (different format from spot prices) - Bug #7 fix
+///
+/// The NegativePreise endpoint has a completely different CSV structure:
+/// - Combined datetime column: "2024-10-20 00:00" (not separate Datum/von/bis)
+/// - Duration flag columns: Stunde1, Stunde3, Stunde4, Stunde6
+/// - Boolean format: "1" (true) or "0" (false)
+///
+/// # Arguments
+///
+/// * `csv_content` - CSV string from NegativePreise endpoint
+/// * `_date_from` - Start date (for logging, not used in parsing)
+/// * `_date_to` - End date (for logging, not used in parsing)
+///
+/// # Returns
+///
+/// * `Ok(Vec<PriceRow>)` - Parsed price rows with negative_logic_hours populated
+/// * `Err(NtpFdwError)` - If CSV parsing or validation fails
+///
+/// # CSV Format
+///
+/// ```csv
+/// Datum;Stunde1;Stunde3;Stunde4;Stunde6
+/// 2024-10-20 00:00;1;1;1;1
+/// 2024-10-20 11:00;0;1;1;1
+/// ```
+pub fn parse_negative_price_flags_csv(
+    csv_content: &str,
+    _date_from: &str,
+    _date_to: &str,
+) -> Result<Vec<PriceRow>, NtpFdwError> {
+    let mut reader = ReaderBuilder::new()
+        .delimiter(b';')
+        .has_headers(true)
+        .trim(csv::Trim::All)
+        .from_reader(csv_content.as_bytes());
+
+    let headers = reader
+        .headers()
+        .map_err(|e| {
+            if csv_content.is_empty() {
+                NtpFdwError::from(ApiError::EmptyResponse)
+            } else {
+                NtpFdwError::from(ParseError::CsvFormat(format!(
+                    "Failed to read CSV headers: {}",
+                    e
+                )))
+            }
+        })?
+        .clone();
+    let mut rows = Vec::new();
+
+    // Validate required columns
+    let required_columns = ["Datum", "Stunde1", "Stunde3", "Stunde4", "Stunde6"];
+    for col in &required_columns {
+        if !headers.iter().any(|h| h == *col) {
+            return Err(ParseError::MissingColumn(col.to_string()).into());
+        }
+    }
+
+    for result in reader.records() {
+        let record = result.map_err(|e| {
+            ParseError::CsvFormat(format!("Failed to read CSV record: {}", e))
+        })?;
+
+        // Parse combined datetime (format: "2024-10-20 00:00")
+        let datum_zeit = get_field(&record, &headers, "Datum")?;
+
+        // Split datetime into date and time components
+        let parts: Vec<&str> = datum_zeit.split(' ').collect();
+        if parts.len() != 2 {
+            return Err(ParseError::InvalidTimestamp(format!(
+                "Expected 'YYYY-MM-DD HH:MM' format, got: {}",
+                datum_zeit
+            ))
+            .into());
+        }
+
+        // Parse timestamp (format: "2024-10-20T00:00:00Z")
+        let timestamp_utc = format!("{}T{}:00Z", parts[0], parts[1]);
+
+        // Calculate end timestamp (+1 hour, using chrono)
+        let dt = chrono::DateTime::parse_from_rfc3339(&timestamp_utc)
+            .map_err(|_| ParseError::InvalidTimestamp(timestamp_utc.clone()))?;
+        let interval_end_utc = (dt + chrono::Duration::hours(1))
+            .format("%Y-%m-%dT%H:%M:%SZ")
+            .to_string();
+
+        // Parse duration flags (1=true, 0=false)
+        let flag_1h = get_field(&record, &headers, "Stunde1")? == "1";
+        let flag_3h = get_field(&record, &headers, "Stunde3")? == "1";
+        let flag_4h = get_field(&record, &headers, "Stunde4")? == "1";
+        let flag_6h = get_field(&record, &headers, "Stunde6")? == "1";
+
+        // Determine longest negative duration (priority: 6h > 4h > 3h > 1h)
+        let negative_logic_hours = if flag_6h {
+            Some("6h".to_string())
+        } else if flag_4h {
+            Some("4h".to_string())
+        } else if flag_3h {
+            Some("3h".to_string())
+        } else if flag_1h {
+            Some("1h".to_string())
+        } else {
+            None
+        };
+
+        // Check if any negative flag is set
+        let negative_flag_value = Some(flag_1h || flag_3h || flag_4h || flag_6h);
+
+        rows.push(PriceRow {
+            timestamp_utc,
+            interval_end_utc,
+            price_type: "negative_flag".to_string(),
+            granularity: "hourly".to_string(),
+            price_eur_mwh: None, // Not provided in NegativePreise CSV
+            product_category: None,
+            negative_logic_hours,
+            negative_flag_value,
+            source_endpoint: "NegativePreise".to_string(),
         });
     }
 
@@ -574,7 +699,8 @@ SIZE:1234"#;
 
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].timestamp_utc, "2024-10-23T23:00:00Z");
-        assert_eq!(rows[0].interval_end_utc, "2024-10-23T00:00:00Z"); // Note: Same-day in API data
+        // Bug #5 fix: Midnight crossing detected (00:00 <= 23:00), so end date is next day
+        assert_eq!(rows[0].interval_end_utc, "2024-10-24T00:00:00Z");
     }
 
     #[test]
