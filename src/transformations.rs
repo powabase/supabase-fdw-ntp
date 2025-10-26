@@ -712,9 +712,12 @@ pub fn normalize_direction(richtung: &str) -> Result<String, ParseError> {
 ///
 /// Parses ISO 8601 timestamp strings (used by TrafficLight JSON endpoint).
 ///
+/// Handles both RFC 3339 format with timezone (e.g., "2024-10-24T00:00:00Z")
+/// and partial ISO 8601 without timezone (e.g., "2024-10-24T00:00:00", assumes UTC).
+///
 /// # Arguments
 ///
-/// * `iso_string` - ISO 8601 timestamp (e.g., "2024-10-24T00:00:00Z")
+/// * `iso_string` - ISO 8601 timestamp with or without timezone
 ///
 /// # Returns
 ///
@@ -725,17 +728,33 @@ pub fn normalize_direction(richtung: &str) -> Result<String, ParseError> {
 ///
 /// ```
 /// # use supabase_fdw_ntp::transformations::parse_iso8601_timestamp;
-/// let dt = parse_iso8601_timestamp("2024-10-24T00:00:00Z").unwrap();
-/// assert_eq!(dt, "2024-10-24T00:00:00Z");
+/// // With timezone
+/// let dt1 = parse_iso8601_timestamp("2024-10-24T00:00:00Z").unwrap();
+/// assert_eq!(dt1, "2024-10-24T00:00:00Z");
+///
+/// // Without timezone (assumes UTC)
+/// let dt2 = parse_iso8601_timestamp("2024-10-24T00:00:00").unwrap();
+/// assert_eq!(dt2, "2024-10-24T00:00:00Z");
 /// ```
 pub fn parse_iso8601_timestamp(iso_string: &str) -> Result<String, ParseError> {
-    use chrono::DateTime;
+    use chrono::{DateTime, NaiveDateTime};
 
-    // Parse ISO 8601 with timezone
-    DateTime::parse_from_rfc3339(iso_string)
-        .map(|dt| dt.with_timezone(&chrono::Utc))
-        .map(|utc_dt| utc_dt.format("%Y-%m-%dT%H:%M:%SZ").to_string())
-        .map_err(|_| ParseError::InvalidTimestamp(iso_string.to_string()))
+    // Try parsing RFC 3339 with timezone first (e.g., "2024-10-24T00:00:00Z")
+    if let Ok(dt) = DateTime::parse_from_rfc3339(iso_string) {
+        return Ok(dt.with_timezone(&chrono::Utc).format("%Y-%m-%dT%H:%M:%SZ").to_string());
+    }
+
+    // Fallback: Parse without timezone and assume UTC (e.g., "2024-10-24T00:00:00")
+    // This handles the case where TrafficLight API returns timestamps without 'Z' suffix
+    NaiveDateTime::parse_from_str(iso_string, "%Y-%m-%dT%H:%M:%S")
+        .map(|naive_dt| naive_dt.and_utc().format("%Y-%m-%dT%H:%M:%SZ").to_string())
+        .map_err(|parse_err| {
+            ParseError::InvalidTimestamp(format!(
+                "{} (expected ISO 8601 format 'YYYY-MM-DDTHH:MM:SS' with optional 'Z' suffix. Parse error: {})",
+                iso_string,
+                parse_err
+            ))
+        })
 }
 
 /// Validate grid status value
@@ -1171,6 +1190,55 @@ mod tests {
     #[test]
     fn test_parse_iso8601_timestamp_invalid() {
         let result = parse_iso8601_timestamp("invalid timestamp");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_iso8601_timestamp_without_timezone_midnight() {
+        // Test parsing timestamps without 'Z' suffix at midnight (TrafficLight API edge case)
+        let dt = parse_iso8601_timestamp("2024-10-24T00:00:00").unwrap();
+        assert_eq!(dt, "2024-10-24T00:00:00Z");
+    }
+
+    #[test]
+    fn test_parse_iso8601_timestamp_without_timezone_nonzero_time() {
+        // Test parsing timestamps without 'Z' suffix with non-zero time
+        let dt = parse_iso8601_timestamp("2024-10-24T14:30:45").unwrap();
+        assert_eq!(dt, "2024-10-24T14:30:45Z");
+    }
+
+    #[test]
+    fn test_parse_iso8601_timestamp_without_timezone_day_boundary() {
+        // Test parsing at end of day (23:59:59)
+        let dt = parse_iso8601_timestamp("2024-10-24T23:59:59").unwrap();
+        assert_eq!(dt, "2024-10-24T23:59:59Z");
+    }
+
+    #[test]
+    fn test_parse_iso8601_timestamp_invalid_hour() {
+        // Invalid hour (25 > 23)
+        let result = parse_iso8601_timestamp("2024-10-24T25:00:00");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_iso8601_timestamp_invalid_minute() {
+        // Invalid minute (60 >= 60)
+        let result = parse_iso8601_timestamp("2024-10-24T12:60:00");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_iso8601_timestamp_invalid_month() {
+        // Invalid month (13 > 12)
+        let result = parse_iso8601_timestamp("2024-13-01T00:00:00");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_iso8601_timestamp_invalid_day() {
+        // Invalid day (32 > 31)
+        let result = parse_iso8601_timestamp("2024-10-32T00:00:00");
         assert!(result.is_err());
     }
 

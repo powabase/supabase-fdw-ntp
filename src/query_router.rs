@@ -250,6 +250,22 @@ pub fn build_api_url(
         );
     }
 
+    // Special handling for TrafficLight (requires datetime format per API spec)
+    // NTP API requires: /TrafficLight/2024-10-23T00:00:00/2024-10-24T00:00:00
+    // Date-only URLs return "Invalid timestamp format" errors (v0.2.10 fix)
+    //
+    // Note: T00:00:00 is hardcoded because:
+    // - TrafficLight API only accepts datetime format (not date-only)
+    // - The API fetches full days of minute-level data
+    // - Local filtering via timestamp_bounds handles hour/minute precision
+    // - Using midnight ensures consistent, predictable API requests
+    if endpoint == "TrafficLight" {
+        // Convert YYYY-MM-DD to YYYY-MM-DDT00:00:00 format required by API
+        let datetime_from = format!("{}T00:00:00", date_from);
+        let datetime_to = format!("{}T00:00:00", date_to);
+        return format!("{}/{}/{}/{}", base, endpoint, datetime_from, datetime_to);
+    }
+
     // Standard handling for all other endpoints (date range format)
     if let Some(prod) = product {
         format!("{}/{}/{}/{}/{}", base, endpoint, prod, date_from, date_to)
@@ -947,6 +963,23 @@ mod tests {
     }
 
     #[test]
+    fn test_build_api_url_trafficlight_endpoint() {
+        // TrafficLight requires datetime format (YYYY-MM-DDTHH:MM:SS) not just date
+        // This is required by the NTP API per OpenAPI specification
+        let url = build_api_url(
+            "https://www.netztransparenz.de/api/ntp",
+            "TrafficLight",
+            None,
+            "2024-10-23",
+            "2024-10-24",
+        );
+        assert_eq!(
+            url,
+            "https://www.netztransparenz.de/api/ntp/TrafficLight/2024-10-23T00:00:00/2024-10-24T00:00:00"
+        );
+    }
+
+    #[test]
     fn test_validate_date_range_valid() {
         assert!(validate_date_range("2024-10-24", "2024-10-25").is_ok());
         assert!(validate_date_range("2024-10-24", "2024-10-24").is_ok()); // Same day
@@ -1495,7 +1528,7 @@ mod tests {
         assert_eq!(plans[0].date_to, "2024-10-25");
         assert_eq!(
             plans[0].api_url,
-            "https://api.example.com/TrafficLight/2024-10-24/2024-10-25"
+            "https://api.example.com/TrafficLight/2024-10-24T00:00:00/2024-10-25T00:00:00"
         );
     }
 

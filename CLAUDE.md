@@ -10,16 +10,17 @@ This wrapper follows the WASM FDW architecture required for hosted Supabase inst
 
 ## Project Status
 
-**✅ v0.2.9 - Production Ready (100% Accessible Endpoints)**
+**✅ v0.2.10 - Production Ready (100% Accessible Endpoints)**
 
-- **Current Version:** v0.2.9
+- **Current Version:** v0.2.10
 - **Status:** Production-ready, 13/13 accessible endpoints working (100% coverage) 🎉
 - **Tables:** 4 (renewable energy, electricity prices, redispatch events, grid status) - ALL WORKING ✅
 - **API Endpoints:** 13/13 accessible endpoints functional (100% completion) ✅
 - **Note:** NTP API provides 13 accessible endpoints (2 wind_offshore variants unavailable per API design)
 - **WASM Binary:** ~326 KB, validated, zero WASI CLI imports ✅
-- **Tests:** 190+ unit tests passing ✅
+- **Tests:** 198 unit tests passing ✅
 - **Query Performance:** Single endpoint ~200-500ms, 3 parallel ~600-1500ms ✅
+- **New in v0.2.10:** Fixed TrafficLight endpoint datetime format (requires `T00:00:00` suffix per API spec) and timezone-less timestamp parsing ✅
 - **New in v0.2.9:** Fixed NegativePreise UNPIVOT bug (4 rows per timestamp), updated documentation to reflect 13 accessible endpoints ✅
 - **New in v0.2.8:** Marktpraemie monthly premium parser with UNPIVOT logic (100% endpoint coverage achieved) ✅
 - **New in v0.2.7:** Jahresmarktpraemie pipe-delimited parser (annual market value 2020-2024 accessible) ✅
@@ -325,8 +326,8 @@ fn matches_timestamp_bounds(timestamp_str: &str, bounds: &TimestampBounds) -> bo
 ## Version Coordination
 
 **Important:** Keep versions synchronized across:
-- `Cargo.toml` - version = "0.2.8"
-- `wit/world.wit` - package powabase:supabase-fdw-ntp@0.2.8
+- `Cargo.toml` - version = "0.2.10"
+- `wit/world.wit` - package powabase:supabase-fdw-ntp@0.2.10
 - `CLAUDE.md` - Current Version section (this file)
 
 All three must match for successful builds and releases.
@@ -339,6 +340,6 @@ All three must match for successful builds and releases.
 
 ---
 
-**Version:** v0.2.9
+**Version:** v0.2.10
 **Last Updated:** 2025-10-26
 **Status:** Production Ready - 100% Accessible Endpoint Coverage (13/13)

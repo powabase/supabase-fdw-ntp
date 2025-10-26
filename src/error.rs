@@ -126,11 +126,20 @@ impl fmt::Display for ParseError {
                 )
             }
             ParseError::InvalidTimestamp(val) => {
-                write!(
-                    f,
-                    "Invalid timestamp format: '{}' (expected DD.MM.YYYY or YYYY-MM-DD)",
-                    val
-                )
+                // Check if it looks like an ISO timestamp (contains 'T')
+                if val.contains('T') {
+                    write!(
+                        f,
+                        "Invalid ISO 8601 timestamp: '{}'",
+                        val
+                    )
+                } else {
+                    write!(
+                        f,
+                        "Invalid timestamp format: '{}' (expected DD.MM.YYYY or YYYY-MM-DD)",
+                        val
+                    )
+                }
             }
             ParseError::MissingColumn(col) => {
                 write!(f, "Missing required column: '{}'", col)

@@ -6029,12 +6029,12 @@ macro_rules! __export_ntp_fdw_impl {
 pub(crate) use __export_ntp_fdw_impl as export;
 #[cfg(target_arch = "wasm32")]
 #[unsafe(
-    link_section = "component-type:wit-bindgen:0.41.0:powabase:supabase-fdw-ntp@0.2.9:ntp-fdw:encoded world"
+    link_section = "component-type:wit-bindgen:0.41.0:powabase:supabase-fdw-ntp@0.2.10:ntp-fdw:encoded world"
 )]
 #[doc(hidden)]
 #[allow(clippy::octal_escapes)]
-pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 3869] = *b"\
-\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\x9f\x1d\x01A\x02\x01\
+pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 3870] = *b"\
+\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\xa0\x1d\x01A\x02\x01\
 A\x12\x01B\x16\x01o\x02ss\x01p\0\x04\0\x07headers\x03\0\x01\x01q\x05\x03get\0\0\x04\
 post\0\0\x03put\0\0\x05patch\0\0\x06delete\0\0\x04\0\x06method\x03\0\x03\x01r\x04\
 \x06method\x04\x03urls\x07headers\x02\x04bodys\x04\0\x07request\x03\0\x05\x01r\x04\
@@ -6117,8 +6117,8 @@ insert\x01\x13\x01@\x03\x03ctx\x0d\x05rowid\x01\x07new-row\x0f\0\x0b\x04\0\x06up
 date\x01\x14\x01@\x02\x03ctx\x0d\x05rowid\x01\0\x0b\x04\0\x06delete\x01\x15\x04\0\
 \x0aend-modify\x01\x0e\x01ps\x01j\x01\x16\x01\x09\x01@\x02\x03ctx\x0d\x04stmt\x05\
 \0\x17\x04\0\x15import-foreign-schema\x01\x18\x04\0\x20supabase:wrappers/routine\
-s@0.2.0\x05\x0b\x04\0'powabase:supabase-fdw-ntp/ntp-fdw@0.2.9\x04\0\x0b\x0d\x01\0\
-\x07ntp-fdw\x03\0\0\0G\x09producers\x01\x0cprocessed-by\x02\x0dwit-component\x07\
+s@0.2.0\x05\x0b\x04\0(powabase:supabase-fdw-ntp/ntp-fdw@0.2.10\x04\0\x0b\x0d\x01\
+\0\x07ntp-fdw\x03\0\0\0G\x09producers\x01\x0cprocessed-by\x02\x0dwit-component\x07\
 0.227.1\x10wit-bindgen-rust\x060.41.0";
 #[inline(never)]
 #[doc(hidden)]
