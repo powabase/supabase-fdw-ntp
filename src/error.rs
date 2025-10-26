@@ -128,11 +128,7 @@ impl fmt::Display for ParseError {
             ParseError::InvalidTimestamp(val) => {
                 // Check if it looks like an ISO timestamp (contains 'T')
                 if val.contains('T') {
-                    write!(
-                        f,
-                        "Invalid ISO 8601 timestamp: '{}'",
-                        val
-                    )
+                    write!(f, "Invalid ISO 8601 timestamp: '{}'", val)
                 } else {
                     write!(
                         f,

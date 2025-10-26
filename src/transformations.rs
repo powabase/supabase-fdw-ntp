@@ -737,7 +737,10 @@ pub fn parse_iso8601_timestamp(iso_string: &str) -> Result<String, ParseError> {
 
     // Try parsing RFC 3339 with timezone first (e.g., "2024-10-24T00:00:00Z")
     if let Ok(dt) = DateTime::parse_from_rfc3339(iso_string) {
-        return Ok(dt.with_timezone(&chrono::Utc).format("%Y-%m-%dT%H:%M:%SZ").to_string());
+        return Ok(dt
+            .with_timezone(&chrono::Utc)
+            .format("%Y-%m-%dT%H:%M:%SZ")
+            .to_string());
     }
 
     // Fallback: Parse without timezone and assume UTC (e.g., "2024-10-24T00:00:00")
