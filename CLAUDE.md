@@ -10,16 +10,16 @@ This wrapper follows the WASM FDW architecture required for hosted Supabase inst
 
 ## Project Status
 
-**✅ v0.2.1 - Time-Based Filtering Fix**
+**✅ v0.2.2 - String Timestamp Parsing Fix**
 
-- **Current Version:** v0.2.1
-- **Status:** Production-ready, time-based filtering bug fixed, security validated
+- **Current Version:** v0.2.2
+- **Status:** Production-ready, time-based filtering FULLY working, security validated
 - **Tables:** 4 (renewable energy, electricity prices, redispatch events, grid status)
 - **API Endpoints:** 15 endpoints consolidated into 4 tables
 - **WASM Binary:** ~301 KB, validated, zero WASI CLI imports ✅
-- **Tests:** 155 unit tests passing ✅
+- **Tests:** 159 unit tests passing ✅
 - **Query Performance:** Single endpoint ~200-500ms, 3 parallel ~600-1500ms ✅
-- **New in v0.2.1:** Two-phase timestamp filtering (hour/minute precision) ✅
+- **New in v0.2.2:** String timestamp parsing fix (time-based filtering fully functional) ✅
 
 ## Technology Stack
 
@@ -231,17 +231,18 @@ fn matches_timestamp_bounds(timestamp_str: &str, bounds: &TimestampBounds) -> bo
 - OAuth2 caching: 1-hour token lifetime
 
 **Data Quality:**
-- 155 unit tests passing (100%) - Updated v0.2.1
+- 159 unit tests passing (100%) - Updated v0.2.2
 - All 6 security fixes validated
 - German locale parsing working (CSV)
 - NULL handling robust (N.A./N.E. variants)
 - JOIN support validated
-- Time-based timestamp filtering working (v0.2.1)
+- Time-based timestamp filtering working (v0.2.2 - FIXED)
 
 ## Known Limitations & Edge Cases
 
-**Handled in v0.2.1:**
-- ✅ Time-based timestamp filtering (hour/minute precision)
+**Handled in v0.2.2:**
+- ✅ String timestamp parsing (PostgreSQL passes timestamps as strings)
+- ✅ Time-based timestamp filtering (hour/minute precision - FULLY WORKING)
 - ✅ Two-phase filtering (API routing + local filtering)
 
 **Handled in v0.2.0:**
@@ -283,8 +284,8 @@ fn matches_timestamp_bounds(timestamp_str: &str, bounds: &TimestampBounds) -> bo
 ## Version Coordination
 
 **Important:** Keep versions synchronized across:
-- `Cargo.toml` - version = "0.2.1"
-- `wit/world.wit` - package powabase:supabase-fdw-ntp@0.2.1
+- `Cargo.toml` - version = "0.2.2"
+- `wit/world.wit` - package powabase:supabase-fdw-ntp@0.2.2
 - `CLAUDE.md` - Current Version section (this file)
 
 All three must match for successful builds and releases.
@@ -297,6 +298,6 @@ All three must match for successful builds and releases.
 
 ---
 
-**Version:** v0.2.1
+**Version:** v0.2.2
 **Last Updated:** 2025-10-26
-**Status:** Production Ready - Time-Based Filtering Fix Applied
+**Status:** Production Ready - String Timestamp Parsing Fixed

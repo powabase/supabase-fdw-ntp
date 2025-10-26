@@ -244,17 +244,38 @@ fn parse_quals(ctx: &Context) -> Result<query_router::QualFilters, String> {
                         }
                     }
                     Value::Cell(Cell::String(date_str)) => {
-                        // Handle string dates (e.g., '2024-10-24')
+                        // Handle string dates/timestamps (e.g., '2024-10-24' or '2024-10-20T10:00:00')
+
+                        // Phase 1: Extract date component for API routing
+                        let date_only = extract_date_component(&date_str);
+
                         match operator.as_str() {
                             ">=" | ">" => {
-                                timestamp_start = Some(date_str);
+                                timestamp_start = Some(date_only);
+                                // Phase 2: Parse to microseconds for local filtering
+                                if let Some(micros) = parse_string_to_micros(&date_str) {
+                                    ts_bound_start = Some(micros);
+                                    ts_bound_start_op = Some(operator);
+                                }
                             }
                             "<" | "<=" => {
-                                timestamp_end = Some(date_str);
+                                timestamp_end = Some(date_only);
+                                // Phase 2: Parse to microseconds for local filtering
+                                if let Some(micros) = parse_string_to_micros(&date_str) {
+                                    ts_bound_end = Some(micros);
+                                    ts_bound_end_op = Some(operator);
+                                }
                             }
                             "=" => {
-                                timestamp_start = Some(date_str.clone());
-                                timestamp_end = Some(date_str);
+                                timestamp_start = Some(date_only.clone());
+                                timestamp_end = Some(date_only);
+                                // Phase 2: Parse to microseconds for local filtering
+                                if let Some(micros) = parse_string_to_micros(&date_str) {
+                                    ts_bound_start = Some(micros);
+                                    ts_bound_start_op = Some(">=".to_string());
+                                    ts_bound_end = Some(micros);
+                                    ts_bound_end_op = Some("<=".to_string());
+                                }
                             }
                             _ => {}
                         }
@@ -350,6 +371,76 @@ fn add_days_to_date(date_str: &str, days: i64) -> Result<String, String> {
     };
 
     Ok(new_date.format("%Y-%m-%d").to_string())
+}
+
+/// Parse timestamp string to microseconds since epoch
+///
+/// Handles both full ISO 8601 timestamps and date-only strings.
+///
+/// # Arguments
+///
+/// * `s` - Timestamp string in ISO 8601 format ("2024-10-20T10:00:00Z") or date-only ("2024-10-20")
+///
+/// # Returns
+///
+/// - `Some(i64)` - Microseconds since epoch (UTC)
+/// - `None` - If string cannot be parsed
+///
+/// # Examples
+///
+/// ```
+/// // Full timestamp with timezone
+/// let micros = parse_string_to_micros("2024-10-20T10:00:00Z");
+/// assert!(micros.is_some());
+///
+/// // Date-only (treated as start of day 00:00:00 UTC)
+/// let micros = parse_string_to_micros("2024-10-20");
+/// assert!(micros.is_some());
+/// ```
+fn parse_string_to_micros(s: &str) -> Option<i64> {
+    use chrono::{DateTime, NaiveDate};
+
+    // Try full timestamp: "2024-10-20T10:00:00Z" or "2024-10-20T10:00:00+00:00"
+    if let Ok(dt) = DateTime::parse_from_rfc3339(s) {
+        return Some(dt.timestamp_micros());
+    }
+
+    // Try date-only: "2024-10-20" → treat as start of day (00:00:00 UTC)
+    if let Ok(date) = NaiveDate::parse_from_str(s, "%Y-%m-%d") {
+        let dt = date.and_hms_opt(0, 0, 0)?;
+        let dt_utc = DateTime::<chrono::Utc>::from_naive_utc_and_offset(dt, chrono::Utc);
+        return Some(dt_utc.timestamp_micros());
+    }
+
+    None
+}
+
+/// Extract date component from timestamp string
+///
+/// Extracts the date portion (YYYY-MM-DD) from either a full timestamp or date-only string.
+///
+/// # Arguments
+///
+/// * `s` - Timestamp string ("2024-10-20T10:00:00Z") or date string ("2024-10-20")
+///
+/// # Returns
+///
+/// Date string in YYYY-MM-DD format
+///
+/// # Examples
+///
+/// ```
+/// assert_eq!(extract_date_component("2024-10-20"), "2024-10-20");
+/// assert_eq!(extract_date_component("2024-10-20T10:00:00Z"), "2024-10-20");
+/// ```
+fn extract_date_component(s: &str) -> String {
+    if s.len() == 10 {
+        // Already in date-only format: "2024-10-20"
+        s.to_string()
+    } else {
+        // Full timestamp: "2024-10-20T10:00:00Z" → extract "2024-10-20"
+        s.split('T').next().unwrap_or(s).to_string()
+    }
 }
 
 /// Apply timestamp bounds filtering to rows
@@ -1888,5 +1979,72 @@ mod tests {
                 "Daytime solar should have production"
             );
         }
+    }
+
+    // ========================================================================
+    // Helper Function Tests (v0.2.2 - String Timestamp Parsing Fix)
+    // ========================================================================
+
+    /// Test parse_string_to_micros with full ISO 8601 timestamp
+    #[test]
+    fn test_parse_string_to_micros_iso8601() {
+        use chrono::DateTime;
+
+        // Test full ISO 8601 timestamp with Z timezone
+        let micros = parse_string_to_micros("2024-10-20T10:00:00Z").unwrap();
+        let expected = DateTime::parse_from_rfc3339("2024-10-20T10:00:00Z")
+            .unwrap()
+            .timestamp_micros();
+        assert_eq!(micros, expected);
+
+        // Test full ISO 8601 timestamp with +00:00 timezone
+        let micros2 = parse_string_to_micros("2024-10-20T15:30:45+00:00").unwrap();
+        let expected2 = DateTime::parse_from_rfc3339("2024-10-20T15:30:45+00:00")
+            .unwrap()
+            .timestamp_micros();
+        assert_eq!(micros2, expected2);
+    }
+
+    /// Test parse_string_to_micros with date-only string
+    #[test]
+    fn test_parse_string_to_micros_date_only() {
+        use chrono::{DateTime, NaiveDate, Utc};
+
+        // Test date-only (should be start of day 00:00:00 UTC)
+        let micros = parse_string_to_micros("2024-10-20").unwrap();
+
+        let date = NaiveDate::from_ymd_opt(2024, 10, 20).unwrap();
+        let dt = date.and_hms_opt(0, 0, 0).unwrap();
+        let expected = DateTime::<Utc>::from_naive_utc_and_offset(dt, Utc).timestamp_micros();
+
+        assert_eq!(micros, expected);
+    }
+
+    /// Test parse_string_to_micros with invalid input
+    #[test]
+    fn test_parse_string_to_micros_invalid() {
+        // Invalid format should return None
+        assert!(parse_string_to_micros("invalid").is_none());
+        assert!(parse_string_to_micros("2024-13-01").is_none()); // Invalid month
+        assert!(parse_string_to_micros("not-a-date").is_none());
+    }
+
+    /// Test extract_date_component with various formats
+    #[test]
+    fn test_extract_date_component() {
+        // Date-only string (already in correct format)
+        assert_eq!(extract_date_component("2024-10-20"), "2024-10-20");
+
+        // Full timestamp with Z timezone
+        assert_eq!(extract_date_component("2024-10-20T10:00:00Z"), "2024-10-20");
+
+        // Full timestamp without timezone
+        assert_eq!(extract_date_component("2024-10-20T10:00:00"), "2024-10-20");
+
+        // Full timestamp with offset timezone
+        assert_eq!(
+            extract_date_component("2024-10-20T15:30:45+00:00"),
+            "2024-10-20"
+        );
     }
 }
