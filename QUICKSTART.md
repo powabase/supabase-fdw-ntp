@@ -25,10 +25,10 @@ CREATE FOREIGN DATA WRAPPER IF NOT EXISTS wasm_wrapper
 CREATE SERVER ntp_server
   FOREIGN DATA WRAPPER wasm_wrapper
   OPTIONS (
-    fdw_package_url 'https://github.com/powabase/supabase-fdw-ntp/releases/download/v0.2.0/supabase_fdw_ntp.wasm',
+    fdw_package_url 'https://github.com/powabase/supabase-fdw-ntp/releases/latest/download/supabase_fdw_ntp.wasm',
     fdw_package_name 'supabase-fdw-ntp',
-    fdw_package_version '0.2.0',
-    fdw_package_checksum '<checksum>',  -- Get from: https://github.com/powabase/supabase-fdw-ntp/releases
+    fdw_package_version '<version>',  -- Get from: https://github.com/powabase/supabase-fdw-ntp/releases/latest
+    fdw_package_checksum '<checksum>',  -- Get from: https://github.com/powabase/supabase-fdw-ntp/releases/latest
     api_base_url 'https://ds.netztransparenz.de/api/v1/data',
     oauth2_token_url 'https://identity.netztransparenz.de/users/connect/token',
     oauth2_client_id 'YOUR_CLIENT_ID',           -- Replace with your credentials
@@ -454,7 +454,7 @@ CREATE SERVER ntp_server_local
   OPTIONS (
     fdw_package_url 'http://host.docker.internal:8000/supabase_fdw_ntp.wasm',
     fdw_package_name 'supabase-fdw-ntp',
-    fdw_package_version '0.2.0',
+    fdw_package_version '<current-version>',  -- Match your build version
     fdw_package_checksum '<YOUR_CHECKSUM_HERE>',
     api_base_url 'https://ds.netztransparenz.de/api/v1/data',
     oauth2_token_url 'https://identity.netztransparenz.de/users/connect/token',
@@ -548,17 +548,12 @@ GROUP BY DATE_TRUNC('hour', timestamp_utc);
 
 ## Version Info
 
-**Current Version:** v0.2.0
-**WASM Size:** 301 KB
+**WASM Size:** ~301 KB
 **Tables:** 4 (renewable energy, electricity prices, redispatch events, grid status)
 **Endpoints:** 15 (9 renewable + 4 prices + 2 grid operations)
 **Supabase Wrappers:** v0.2.0+
 
-**v0.2.0 Highlights:**
-- Grid operations tables added (redispatch, grid status)
-- First JSON endpoint (TrafficLight)
-- JOIN support via re_scan() implementation
-- 'N.E.' NULL handling for wind offshore
+**Latest Version:** See [GitHub Releases](https://github.com/powabase/supabase-fdw-ntp/releases/latest) for current version and changelog
 - 6 critical security fixes applied
 - 155 tests passing (100% success rate)
 

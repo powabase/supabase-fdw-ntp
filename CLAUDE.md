@@ -10,15 +10,16 @@ This wrapper follows the WASM FDW architecture required for hosted Supabase inst
 
 ## Project Status
 
-**✅ v0.2.0 - Production Ready**
+**✅ v0.2.1 - Time-Based Filtering Fix**
 
-- **Current Version:** v0.2.0
-- **Status:** Production-ready, security fixes applied, JOIN support validated
+- **Current Version:** v0.2.1
+- **Status:** Production-ready, time-based filtering bug fixed, security validated
 - **Tables:** 4 (renewable energy, electricity prices, redispatch events, grid status)
 - **API Endpoints:** 15 endpoints consolidated into 4 tables
-- **WASM Binary:** 301 KB, validated, zero WASI CLI imports ✅
-- **Tests:** 149 unit tests passing ✅
+- **WASM Binary:** ~301 KB, validated, zero WASI CLI imports ✅
+- **Tests:** 155 unit tests passing ✅
 - **Query Performance:** Single endpoint ~200-500ms, 3 parallel ~600-1500ms ✅
+- **New in v0.2.1:** Two-phase timestamp filtering (hour/minute precision) ✅
 
 ## Technology Stack
 
@@ -181,6 +182,40 @@ i16::try_from(minutes).map_err(|_| {
 Ok(minutes as i16)  // 40000 becomes -25536
 ```
 
+### 5. Two-Phase Timestamp Filtering (v0.2.1 Fix)
+
+**Problem:** Time-based filters like `WHERE timestamp_utc >= '2024-10-20T10:00:00'` were failing because time components were stripped during qual parsing.
+
+**Solution:** Two-phase filtering approach:
+
+**Phase 1 (API Routing):** Extract DATE for efficient API calls
+```rust
+// In parse_quals(): Extract both date AND full timestamp
+let date_str = micros_to_date_string(micros)?;  // "2024-10-20"
+let timestamp_micros = micros;                   // Full precision preserved
+```
+
+**Phase 2 (Local Filtering):** Apply hour/minute filtering after fetching
+```rust
+// In begin_scan(): Filter by full timestamp bounds after API fetch
+let filtered_rows = filter_renewable_rows(all_rows, &filters.timestamp_bounds);
+```
+
+**Benefit:**
+- ✅ Time-based queries work: `WHERE timestamp_utc >= '2024-10-20T10:00:00' AND timestamp_utc < '2024-10-20T16:00:00'`
+- ✅ Date-only queries still work: `WHERE timestamp_utc >= '2024-10-20' AND timestamp_utc < '2024-10-21'`
+- ✅ API efficiency preserved: Only fetch needed dates
+- ✅ Performance: Local filtering is fast (in-memory, already fetched data)
+
+**Key Implementation:**
+```rust
+fn matches_timestamp_bounds(timestamp_str: &str, bounds: &TimestampBounds) -> bool {
+    // Parse ISO 8601 timestamp to microseconds
+    // Compare using original SQL operators (>=, >, <, <=, =)
+    // Returns true if row passes all bounds
+}
+```
+
 ## Production Metrics
 
 **WASM Binary:**
@@ -196,13 +231,18 @@ Ok(minutes as i16)  // 40000 becomes -25536
 - OAuth2 caching: 1-hour token lifetime
 
 **Data Quality:**
-- 149 unit tests passing (100%)
+- 155 unit tests passing (100%) - Updated v0.2.1
 - All 6 security fixes validated
 - German locale parsing working (CSV)
 - NULL handling robust (N.A./N.E. variants)
 - JOIN support validated
+- Time-based timestamp filtering working (v0.2.1)
 
 ## Known Limitations & Edge Cases
+
+**Handled in v0.2.1:**
+- ✅ Time-based timestamp filtering (hour/minute precision)
+- ✅ Two-phase filtering (API routing + local filtering)
 
 **Handled in v0.2.0:**
 - ✅ Array bounds checking (no panic on JOINs)
@@ -243,8 +283,8 @@ Ok(minutes as i16)  // 40000 becomes -25536
 ## Version Coordination
 
 **Important:** Keep versions synchronized across:
-- `Cargo.toml` - version = "0.2.0"
-- `wit/world.wit` - package powabase:supabase-fdw-ntp@0.2.0
+- `Cargo.toml` - version = "0.2.1"
+- `wit/world.wit` - package powabase:supabase-fdw-ntp@0.2.1
 - `CLAUDE.md` - Current Version section (this file)
 
 All three must match for successful builds and releases.
@@ -257,6 +297,6 @@ All three must match for successful builds and releases.
 
 ---
 
-**Version:** v0.2.0
-**Last Updated:** 2025-10-25
-**Status:** Production Ready - Security Fixes Applied, JOIN Support Validated
+**Version:** v0.2.1
+**Last Updated:** 2025-10-26
+**Status:** Production Ready - Time-Based Filtering Fix Applied

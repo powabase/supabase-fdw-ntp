@@ -36,12 +36,12 @@ A standalone WASM FDW that can be used with any Supabase project to access offic
 
 ## Available Tables
 
-| Table | Purpose | Coverage | Version |
-|-------|---------|----------|---------|
-| **renewable_energy_timeseries** | Solar, wind onshore, wind offshore production (forecasts, actuals, real-time) | 9 endpoints | v0.2.0 |
-| **electricity_market_prices** | Spot market prices, market premiums, annual values, negative price flags | 4 endpoints | v0.2.0 |
-| **redispatch_timeseries** | Grid redispatch measures for congestion management | 1 endpoint | v0.2.0 |
-| **grid_status** | Real-time grid traffic light status (green/yellow/red) | 1 endpoint | v0.2.0 |
+| Table | Purpose | Coverage |
+|-------|---------|----------|
+| **renewable_energy_timeseries** | Solar, wind onshore, wind offshore production (forecasts, actuals, real-time) | 9 endpoints |
+| **electricity_market_prices** | Spot market prices, market premiums, annual values, negative price flags | 4 endpoints |
+| **redispatch_timeseries** | Grid redispatch measures for congestion management | 1 endpoint |
+| **grid_status** | Real-time grid traffic light status (green/yellow/red) | 1 endpoint |
 
 ## Quick Start
 

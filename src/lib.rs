@@ -36,7 +36,7 @@ mod types_grid;
 // Re-export public types for easier access
 pub use error::{ApiError, NtpFdwError, OAuth2Error, ParseError};
 pub use oauth2::{OAuth2Config, OAuth2Manager};
-pub use query_router::{DateRange, QualFilters, QueryPlan};
+pub use query_router::{DateRange, QualFilters, QueryPlan, TimestampBounds};
 pub use types::{PriceRow, RenewableRow};
 pub use types_grid::{GridStatusRow, RedispatchRow};
 
@@ -174,6 +174,12 @@ fn parse_quals(ctx: &Context) -> Result<query_router::QualFilters, String> {
     let mut timestamp_start: Option<String> = None;
     let mut timestamp_end: Option<String> = None;
 
+    // NEW: Track full timestamp bounds for local filtering
+    let mut ts_bound_start: Option<i64> = None;
+    let mut ts_bound_start_op: Option<String> = None;
+    let mut ts_bound_end: Option<i64> = None;
+    let mut ts_bound_end_op: Option<String> = None;
+
     // Parse each qual
     for qual in quals {
         let field = qual.field();
@@ -203,24 +209,36 @@ fn parse_quals(ctx: &Context) -> Result<query_router::QualFilters, String> {
                 }
             }
             "timestamp_utc" => {
-                // Extract date from timestamp
+                // Extract BOTH date (for API routing) AND full timestamp (for local filtering)
                 // timestamp_utc is stored as Cell::Timestamptz (microseconds since epoch)
                 match value {
                     Value::Cell(Cell::Timestamptz(micros)) => {
+                        // Phase 1: Extract date for API routing (existing logic)
                         let date_str = micros_to_date_string(micros)
                             .map_err(|e| format!("Failed to parse timestamp_utc: {}", e))?;
 
                         match operator.as_str() {
                             ">=" | ">" => {
                                 timestamp_start = Some(date_str);
+                                // Phase 2: Store full timestamp for local filtering
+                                ts_bound_start = Some(micros);
+                                ts_bound_start_op = Some(operator);
                             }
                             "<" | "<=" => {
                                 timestamp_end = Some(date_str);
+                                // Phase 2: Store full timestamp for local filtering
+                                ts_bound_end = Some(micros);
+                                ts_bound_end_op = Some(operator);
                             }
                             "=" => {
                                 // Exact date match
                                 timestamp_start = Some(date_str.clone());
                                 timestamp_end = Some(date_str);
+                                // Phase 2: Store full timestamp for local filtering
+                                ts_bound_start = Some(micros);
+                                ts_bound_start_op = Some(">=".to_string());
+                                ts_bound_end = Some(micros);
+                                ts_bound_end_op = Some("<=".to_string());
                             }
                             _ => {}
                         }
@@ -266,11 +284,35 @@ fn parse_quals(ctx: &Context) -> Result<query_router::QualFilters, String> {
         (None, None) => None, // No date filter (will use default last 7 days)
     };
 
+    // Build TimestampBounds if full timestamp quals present
+    let timestamp_bounds = match (ts_bound_start, ts_bound_end) {
+        (Some(start), Some(end)) => Some(query_router::TimestampBounds {
+            start: Some(start),
+            start_operator: ts_bound_start_op,
+            end: Some(end),
+            end_operator: ts_bound_end_op,
+        }),
+        (Some(start), None) => Some(query_router::TimestampBounds {
+            start: Some(start),
+            start_operator: ts_bound_start_op,
+            end: None,
+            end_operator: None,
+        }),
+        (None, Some(end)) => Some(query_router::TimestampBounds {
+            start: None,
+            start_operator: None,
+            end: Some(end),
+            end_operator: ts_bound_end_op,
+        }),
+        (None, None) => None, // No timestamp bounds (date-only or no filter)
+    };
+
     Ok(query_router::QualFilters {
         product_type,
         data_category,
         price_type,
         timestamp_range,
+        timestamp_bounds,
         table_name,
     })
 }
@@ -308,6 +350,118 @@ fn add_days_to_date(date_str: &str, days: i64) -> Result<String, String> {
     };
 
     Ok(new_date.format("%Y-%m-%d").to_string())
+}
+
+/// Apply timestamp bounds filtering to rows
+///
+/// Filters rows based on full timestamp (hour/minute/second) comparisons.
+/// Solves the time-component stripping bug where queries with time-based filters
+/// like `WHERE timestamp_utc >= '2024-10-20T10:00:00'` were returning all rows
+/// for that date instead of just the requested time range.
+///
+/// # Arguments
+///
+/// * `timestamp_str` - ISO 8601 timestamp string from row (e.g., "2024-10-20T14:30:00Z")
+/// * `bounds` - Timestamp bounds extracted from SQL WHERE clause
+///
+/// # Returns
+///
+/// `true` if row passes all timestamp filters, `false` otherwise
+///
+/// # Implementation Notes
+///
+/// - Converts ISO 8601 timestamp strings to microseconds since epoch
+/// - Compares using the original operators from SQL (>=, >, <, <=, =)
+/// - Handles missing bounds (None) by not filtering on that side
+fn matches_timestamp_bounds(timestamp_str: &str, bounds: &TimestampBounds) -> bool {
+    use chrono::DateTime;
+
+    // Parse row timestamp to microseconds
+    let row_timestamp_micros = match DateTime::parse_from_rfc3339(timestamp_str) {
+        Ok(dt) => dt.timestamp_micros(),
+        Err(_) => return false, // Invalid timestamp format, exclude row
+    };
+
+    // Check lower bound (start)
+    if let Some(start_micros) = bounds.start {
+        let matches_start = match bounds.start_operator.as_deref() {
+            Some(">=") => row_timestamp_micros >= start_micros,
+            Some(">") => row_timestamp_micros > start_micros,
+            Some("=") => row_timestamp_micros == start_micros,
+            _ => true, // Unknown operator, don't filter
+        };
+        if !matches_start {
+            return false;
+        }
+    }
+
+    // Check upper bound (end)
+    if let Some(end_micros) = bounds.end {
+        let matches_end = match bounds.end_operator.as_deref() {
+            Some("<") => row_timestamp_micros < end_micros,
+            Some("<=") => row_timestamp_micros <= end_micros,
+            Some("=") => row_timestamp_micros == end_micros,
+            _ => true, // Unknown operator, don't filter
+        };
+        if !matches_end {
+            return false;
+        }
+    }
+
+    true
+}
+
+/// Apply timestamp filtering to renewable energy rows
+fn filter_renewable_rows(
+    rows: Vec<RenewableRow>,
+    bounds: &Option<TimestampBounds>,
+) -> Vec<RenewableRow> {
+    match bounds {
+        Some(bounds) => rows
+            .into_iter()
+            .filter(|row| matches_timestamp_bounds(&row.timestamp_utc, bounds))
+            .collect(),
+        None => rows, // No filtering needed
+    }
+}
+
+/// Apply timestamp filtering to price rows
+fn filter_price_rows(rows: Vec<PriceRow>, bounds: &Option<TimestampBounds>) -> Vec<PriceRow> {
+    match bounds {
+        Some(bounds) => rows
+            .into_iter()
+            .filter(|row| matches_timestamp_bounds(&row.timestamp_utc, bounds))
+            .collect(),
+        None => rows, // No filtering needed
+    }
+}
+
+/// Apply timestamp filtering to grid status rows
+fn filter_grid_status_rows(
+    rows: Vec<GridStatusRow>,
+    bounds: &Option<TimestampBounds>,
+) -> Vec<GridStatusRow> {
+    match bounds {
+        Some(bounds) => rows
+            .into_iter()
+            .filter(|row| matches_timestamp_bounds(&row.timestamp_utc, bounds))
+            .collect(),
+        None => rows, // No filtering needed
+    }
+}
+
+/// Apply timestamp filtering to redispatch rows
+fn filter_redispatch_rows(
+    rows: Vec<RedispatchRow>,
+    bounds: &Option<TimestampBounds>,
+) -> Vec<RedispatchRow> {
+    match bounds {
+        Some(bounds) => rows
+            .into_iter()
+            .filter(|row| matches_timestamp_bounds(&row.timestamp_utc, bounds))
+            .collect(),
+        None => rows, // No filtering needed
+    }
 }
 
 /// Fetch API endpoint with OAuth2 authentication
@@ -1020,12 +1174,23 @@ impl Guest for NtpFdw {
             )?;
         }
 
-        // 5. Store rows in struct for iteration (official pattern)
+        // 5. Apply local timestamp filtering (Phase 2: time-based filtering)
+        // Filters rows by hour/minute/second after fetching by date
+        // Solves bug where time components were stripped during qual parsing
+        let filtered_renewable_rows =
+            filter_renewable_rows(all_renewable_rows, &filters.timestamp_bounds);
+        let filtered_price_rows = filter_price_rows(all_price_rows, &filters.timestamp_bounds);
+        let filtered_redispatch_rows =
+            filter_redispatch_rows(all_redispatch_rows, &filters.timestamp_bounds);
+        let filtered_grid_status_rows =
+            filter_grid_status_rows(all_grid_status_rows, &filters.timestamp_bounds);
+
+        // 6. Store rows in struct for iteration (official pattern)
         this.clear_rows();
-        this.renewable_rows = all_renewable_rows;
-        this.price_rows = all_price_rows;
-        this.redispatch_rows = all_redispatch_rows;
-        this.grid_status_rows = all_grid_status_rows;
+        this.renewable_rows = filtered_renewable_rows;
+        this.price_rows = filtered_price_rows;
+        this.redispatch_rows = filtered_redispatch_rows;
+        this.grid_status_rows = filtered_grid_status_rows;
         this.current_table = filters.table_name;
 
         Ok(())
@@ -1412,5 +1577,316 @@ mod tests {
 
         // Verify no panic occurred (test passes if we reach here)
         assert_eq!(fdw.renewable_row_position, 2);
+    }
+
+    // ========================================================================
+    // Timestamp Filtering Tests (v0.2.1 - Time-Based Filtering Fix)
+    // ========================================================================
+
+    /// Test matches_timestamp_bounds with >= operator (lower bound)
+    #[test]
+    fn test_matches_timestamp_bounds_gte() {
+        use chrono::DateTime;
+
+        let bounds = TimestampBounds {
+            start: Some(
+                DateTime::parse_from_rfc3339("2024-10-20T10:00:00Z")
+                    .unwrap()
+                    .timestamp_micros(),
+            ),
+            start_operator: Some(">=".to_string()),
+            end: None,
+            end_operator: None,
+        };
+
+        // Row before bound - should NOT match
+        assert!(!matches_timestamp_bounds("2024-10-20T09:59:59Z", &bounds));
+
+        // Row at exact bound - should match
+        assert!(matches_timestamp_bounds("2024-10-20T10:00:00Z", &bounds));
+
+        // Row after bound - should match
+        assert!(matches_timestamp_bounds("2024-10-20T10:00:01Z", &bounds));
+        assert!(matches_timestamp_bounds("2024-10-20T15:30:00Z", &bounds));
+    }
+
+    /// Test matches_timestamp_bounds with < operator (upper bound)
+    #[test]
+    fn test_matches_timestamp_bounds_lt() {
+        use chrono::DateTime;
+
+        let bounds = TimestampBounds {
+            start: None,
+            start_operator: None,
+            end: Some(
+                DateTime::parse_from_rfc3339("2024-10-20T16:00:00Z")
+                    .unwrap()
+                    .timestamp_micros(),
+            ),
+            end_operator: Some("<".to_string()),
+        };
+
+        // Row before bound - should match
+        assert!(matches_timestamp_bounds("2024-10-20T15:59:59Z", &bounds));
+        assert!(matches_timestamp_bounds("2024-10-20T10:00:00Z", &bounds));
+
+        // Row at exact bound - should NOT match
+        assert!(!matches_timestamp_bounds("2024-10-20T16:00:00Z", &bounds));
+
+        // Row after bound - should NOT match
+        assert!(!matches_timestamp_bounds("2024-10-20T16:00:01Z", &bounds));
+    }
+
+    /// Test matches_timestamp_bounds with both bounds (range query)
+    #[test]
+    fn test_matches_timestamp_bounds_range() {
+        use chrono::DateTime;
+
+        let bounds = TimestampBounds {
+            start: Some(
+                DateTime::parse_from_rfc3339("2024-10-20T10:00:00Z")
+                    .unwrap()
+                    .timestamp_micros(),
+            ),
+            start_operator: Some(">=".to_string()),
+            end: Some(
+                DateTime::parse_from_rfc3339("2024-10-20T16:00:00Z")
+                    .unwrap()
+                    .timestamp_micros(),
+            ),
+            end_operator: Some("<".to_string()),
+        };
+
+        // Before range - should NOT match
+        assert!(!matches_timestamp_bounds("2024-10-20T09:59:59Z", &bounds));
+
+        // Start of range - should match
+        assert!(matches_timestamp_bounds("2024-10-20T10:00:00Z", &bounds));
+
+        // Middle of range - should match
+        assert!(matches_timestamp_bounds("2024-10-20T12:30:00Z", &bounds));
+        assert!(matches_timestamp_bounds("2024-10-20T15:45:00Z", &bounds));
+
+        // End of range - should NOT match (< operator)
+        assert!(!matches_timestamp_bounds("2024-10-20T16:00:00Z", &bounds));
+
+        // After range - should NOT match
+        assert!(!matches_timestamp_bounds("2024-10-20T16:00:01Z", &bounds));
+    }
+
+    /// Test filter_renewable_rows with time-based filtering
+    #[test]
+    fn test_filter_renewable_rows_time_based() {
+        use chrono::DateTime;
+
+        let rows = vec![
+            RenewableRow {
+                timestamp_utc: "2024-10-20T09:00:00Z".to_string(),
+                interval_end_utc: "2024-10-20T09:15:00Z".to_string(),
+                interval_minutes: 15,
+                product_type: "solar".to_string(),
+                data_category: "extrapolation".to_string(),
+                tso_50hertz_mw: Some(5000.0),
+                tso_amprion_mw: Some(3000.0),
+                tso_tennet_mw: Some(4000.0),
+                tso_transnetbw_mw: Some(2000.0),
+                source_endpoint: "hochrechnung/Solar".to_string(),
+            },
+            RenewableRow {
+                timestamp_utc: "2024-10-20T10:00:00Z".to_string(),
+                interval_end_utc: "2024-10-20T10:15:00Z".to_string(),
+                interval_minutes: 15,
+                product_type: "solar".to_string(),
+                data_category: "extrapolation".to_string(),
+                tso_50hertz_mw: Some(8000.0),
+                tso_amprion_mw: Some(6000.0),
+                tso_tennet_mw: Some(7000.0),
+                tso_transnetbw_mw: Some(5000.0),
+                source_endpoint: "hochrechnung/Solar".to_string(),
+            },
+            RenewableRow {
+                timestamp_utc: "2024-10-20T12:00:00Z".to_string(),
+                interval_end_utc: "2024-10-20T12:15:00Z".to_string(),
+                interval_minutes: 15,
+                product_type: "solar".to_string(),
+                data_category: "extrapolation".to_string(),
+                tso_50hertz_mw: Some(10000.0),
+                tso_amprion_mw: Some(8000.0),
+                tso_tennet_mw: Some(9000.0),
+                tso_transnetbw_mw: Some(7000.0),
+                source_endpoint: "hochrechnung/Solar".to_string(),
+            },
+            RenewableRow {
+                timestamp_utc: "2024-10-20T16:00:00Z".to_string(),
+                interval_end_utc: "2024-10-20T16:15:00Z".to_string(),
+                interval_minutes: 15,
+                product_type: "solar".to_string(),
+                data_category: "extrapolation".to_string(),
+                tso_50hertz_mw: Some(6000.0),
+                tso_amprion_mw: Some(4000.0),
+                tso_tennet_mw: Some(5000.0),
+                tso_transnetbw_mw: Some(3000.0),
+                source_endpoint: "hochrechnung/Solar".to_string(),
+            },
+        ];
+
+        // Filter for 10:00-16:00 range (daytime solar production)
+        let bounds = Some(TimestampBounds {
+            start: Some(
+                DateTime::parse_from_rfc3339("2024-10-20T10:00:00Z")
+                    .unwrap()
+                    .timestamp_micros(),
+            ),
+            start_operator: Some(">=".to_string()),
+            end: Some(
+                DateTime::parse_from_rfc3339("2024-10-20T16:00:00Z")
+                    .unwrap()
+                    .timestamp_micros(),
+            ),
+            end_operator: Some("<".to_string()),
+        });
+
+        let filtered = filter_renewable_rows(rows, &bounds);
+
+        // Should return only 2 rows: 10:00 and 12:00 (not 09:00 or 16:00)
+        assert_eq!(filtered.len(), 2);
+        assert_eq!(filtered[0].timestamp_utc, "2024-10-20T10:00:00Z");
+        assert_eq!(filtered[1].timestamp_utc, "2024-10-20T12:00:00Z");
+    }
+
+    /// Test filter_renewable_rows with no bounds (pass-through)
+    #[test]
+    fn test_filter_renewable_rows_no_bounds() {
+        let rows = vec![
+            RenewableRow {
+                timestamp_utc: "2024-10-20T00:00:00Z".to_string(),
+                interval_end_utc: "2024-10-20T00:15:00Z".to_string(),
+                interval_minutes: 15,
+                product_type: "solar".to_string(),
+                data_category: "forecast".to_string(),
+                tso_50hertz_mw: Some(0.0),
+                tso_amprion_mw: Some(0.0),
+                tso_tennet_mw: Some(0.0),
+                tso_transnetbw_mw: Some(0.0),
+                source_endpoint: "prognose/Solar".to_string(),
+            },
+            RenewableRow {
+                timestamp_utc: "2024-10-20T12:00:00Z".to_string(),
+                interval_end_utc: "2024-10-20T12:15:00Z".to_string(),
+                interval_minutes: 15,
+                product_type: "solar".to_string(),
+                data_category: "forecast".to_string(),
+                tso_50hertz_mw: Some(10000.0),
+                tso_amprion_mw: Some(8000.0),
+                tso_tennet_mw: Some(9000.0),
+                tso_transnetbw_mw: Some(7000.0),
+                source_endpoint: "prognose/Solar".to_string(),
+            },
+        ];
+
+        let filtered = filter_renewable_rows(rows.clone(), &None);
+
+        // Should return all rows (no filtering)
+        assert_eq!(filtered.len(), 2);
+        assert_eq!(filtered[0].timestamp_utc, rows[0].timestamp_utc);
+        assert_eq!(filtered[1].timestamp_utc, rows[1].timestamp_utc);
+    }
+
+    /// Test timestamp filtering replicates bug scenario from TEST_RESULTS.md
+    ///
+    /// Validates that the fix resolves the original bug where queries like:
+    /// `WHERE timestamp_utc >= '2024-10-20T10:00:00' AND timestamp_utc < '2024-10-20T16:00:00'`
+    /// were returning 0 rows because time components were stripped.
+    #[test]
+    fn test_timestamp_filtering_bug_fix_scenario() {
+        use chrono::DateTime;
+
+        // Simulate fetched data for 2024-10-20 (entire day, 96 rows @ 15-min intervals)
+        // We'll create a subset representing key hours
+        let mut all_day_rows = Vec::new();
+
+        // Nighttime hours (00:00-09:00) - should be filtered OUT
+        for hour in 0..9 {
+            all_day_rows.push(RenewableRow {
+                timestamp_utc: format!("2024-10-20T{:02}:00:00Z", hour),
+                interval_end_utc: format!("2024-10-20T{:02}:15:00Z", hour),
+                interval_minutes: 15,
+                product_type: "solar".to_string(),
+                data_category: "extrapolation".to_string(),
+                tso_50hertz_mw: Some(0.0),
+                tso_amprion_mw: Some(0.0),
+                tso_tennet_mw: Some(0.0),
+                tso_transnetbw_mw: Some(0.0),
+                source_endpoint: "hochrechnung/Solar".to_string(),
+            });
+        }
+
+        // Daytime hours (10:00-15:00) - should be INCLUDED
+        for hour in 10..16 {
+            all_day_rows.push(RenewableRow {
+                timestamp_utc: format!("2024-10-20T{:02}:00:00Z", hour),
+                interval_end_utc: format!("2024-10-20T{:02}:15:00Z", hour),
+                interval_minutes: 15,
+                product_type: "solar".to_string(),
+                data_category: "extrapolation".to_string(),
+                tso_50hertz_mw: Some(10000.0),
+                tso_amprion_mw: Some(8000.0),
+                tso_tennet_mw: Some(9000.0),
+                tso_transnetbw_mw: Some(7000.0),
+                source_endpoint: "hochrechnung/Solar".to_string(),
+            });
+        }
+
+        // Evening hours (17:00-23:00) - should be filtered OUT
+        for hour in 17..24 {
+            all_day_rows.push(RenewableRow {
+                timestamp_utc: format!("2024-10-20T{:02}:00:00Z", hour),
+                interval_end_utc: format!("2024-10-20T{:02}:15:00Z", hour),
+                interval_minutes: 15,
+                product_type: "solar".to_string(),
+                data_category: "extrapolation".to_string(),
+                tso_50hertz_mw: Some(0.0),
+                tso_amprion_mw: Some(0.0),
+                tso_tennet_mw: Some(0.0),
+                tso_transnetbw_mw: Some(0.0),
+                source_endpoint: "hochrechnung/Solar".to_string(),
+            });
+        }
+
+        // User query: WHERE timestamp_utc >= '2024-10-20T10:00:00' AND timestamp_utc < '2024-10-20T16:00:00'
+        let bounds = Some(TimestampBounds {
+            start: Some(
+                DateTime::parse_from_rfc3339("2024-10-20T10:00:00Z")
+                    .unwrap()
+                    .timestamp_micros(),
+            ),
+            start_operator: Some(">=".to_string()),
+            end: Some(
+                DateTime::parse_from_rfc3339("2024-10-20T16:00:00Z")
+                    .unwrap()
+                    .timestamp_micros(),
+            ),
+            end_operator: Some("<".to_string()),
+        });
+
+        // Before fix: This would return 0 rows (time components stripped, invalid range)
+        // After fix: Should return exactly 6 rows (10:00-15:00)
+        let filtered = filter_renewable_rows(all_day_rows.clone(), &bounds);
+
+        assert_eq!(
+            filtered.len(),
+            6,
+            "Expected 6 rows for 10:00-15:00 range (bug fix validation)"
+        );
+        assert_eq!(filtered[0].timestamp_utc, "2024-10-20T10:00:00Z");
+        assert_eq!(filtered[5].timestamp_utc, "2024-10-20T15:00:00Z");
+
+        // Verify all returned rows have non-zero production (daytime)
+        for row in &filtered {
+            assert!(
+                row.tso_50hertz_mw.unwrap() > 0.0,
+                "Daytime solar should have production"
+            );
+        }
     }
 }

@@ -27,6 +27,7 @@
 //!         start: "2024-10-24".to_string(),
 //!         end: "2024-10-25".to_string(),
 //!     }),
+//!     timestamp_bounds: None,
 //!     table_name: "renewable_energy_timeseries".to_string(),
 //! };
 //!
@@ -86,10 +87,20 @@ pub struct QualFilters {
     /// From SQL: `WHERE price_type = 'spot_market'`
     pub price_type: Option<String>,
 
-    /// Timestamp range filter
+    /// Timestamp range filter (date-only, for API routing)
     ///
     /// From SQL: `WHERE timestamp_utc >= '2024-10-24' AND timestamp_utc < '2024-10-25'`
+    ///
+    /// Extracts only the date portion (YYYY-MM-DD) for efficient API endpoint routing.
     pub timestamp_range: Option<DateRange>,
+
+    /// Timestamp bounds (full precision, for local filtering)
+    ///
+    /// From SQL: `WHERE timestamp_utc >= '2024-10-20T10:00:00' AND timestamp_utc < '2024-10-20T16:00:00'`
+    ///
+    /// Preserves full timestamp with hour/minute/second for local post-filtering.
+    /// Solves bug where time components were stripped during qual parsing.
+    pub timestamp_bounds: Option<TimestampBounds>,
 
     /// Table name: "renewable_energy_timeseries" or "electricity_market_prices"
     ///
@@ -97,7 +108,7 @@ pub struct QualFilters {
     pub table_name: String,
 }
 
-/// Date range for timestamp filtering
+/// Date range for timestamp filtering (API routing)
 #[derive(Debug, Clone, PartialEq)]
 pub struct DateRange {
     /// Start date (ISO 8601: YYYY-MM-DD)
@@ -105,6 +116,40 @@ pub struct DateRange {
 
     /// End date (ISO 8601: YYYY-MM-DD)
     pub end: String,
+}
+
+/// Timestamp bounds for local filtering
+///
+/// Stores full timestamp values (with time components) extracted from SQL WHERE clause
+/// for local post-filtering after API data fetch.
+///
+/// # Purpose
+///
+/// Solves the time-component stripping bug where queries like
+/// `WHERE timestamp_utc >= '2024-10-20T10:00:00'` were converted to date-only
+/// strings for API routing, losing hour/minute precision.
+///
+/// # Usage
+///
+/// - API routing: Use `DateRange` (date-only) to determine which dates to fetch
+/// - Local filtering: Use `TimestampBounds` (full timestamps) to filter fetched rows
+#[derive(Debug, Clone)]
+pub struct TimestampBounds {
+    /// Lower bound timestamp in microseconds since epoch
+    ///
+    /// From SQL: `WHERE timestamp_utc >= '2024-10-20T10:00:00'`
+    pub start: Option<i64>,
+
+    /// Lower bound operator: ">=", ">", or "="
+    pub start_operator: Option<String>,
+
+    /// Upper bound timestamp in microseconds since epoch
+    ///
+    /// From SQL: `WHERE timestamp_utc < '2024-10-20T16:00:00'`
+    pub end: Option<i64>,
+
+    /// Upper bound operator: "<", "<=", or "="
+    pub end_operator: Option<String>,
 }
 
 // ============================================================================
@@ -300,6 +345,7 @@ pub fn extract_date_range(timestamp_range: Option<&DateRange>) -> DateRange {
 ///         start: "2024-10-24".to_string(),
 ///         end: "2024-10-25".to_string(),
 ///     }),
+///     timestamp_bounds: None,
 ///     table_name: "renewable_energy_timeseries".to_string(),
 /// };
 ///
@@ -945,6 +991,7 @@ mod tests {
                 start: "2024-10-24".to_string(),
                 end: "2024-10-25".to_string(),
             }),
+            timestamp_bounds: None,
             table_name: "renewable_energy_timeseries".to_string(),
         };
 
@@ -972,6 +1019,7 @@ mod tests {
                 start: "2024-10-24".to_string(),
                 end: "2024-10-25".to_string(),
             }),
+            timestamp_bounds: None,
             table_name: "renewable_energy_timeseries".to_string(),
         };
 
@@ -994,6 +1042,7 @@ mod tests {
                 start: "2024-10-24".to_string(),
                 end: "2024-10-25".to_string(),
             }),
+            timestamp_bounds: None,
             table_name: "renewable_energy_timeseries".to_string(),
         };
 
@@ -1018,6 +1067,7 @@ mod tests {
                 start: "2024-10-24".to_string(),
                 end: "2024-10-25".to_string(),
             }),
+            timestamp_bounds: None,
             table_name: "renewable_energy_timeseries".to_string(),
         };
 
@@ -1044,6 +1094,7 @@ mod tests {
                 start: "2024-10-24".to_string(),
                 end: "2024-10-25".to_string(),
             }),
+            timestamp_bounds: None,
             table_name: "renewable_energy_timeseries".to_string(),
         };
 
@@ -1062,6 +1113,7 @@ mod tests {
             data_category: Some("forecast".to_string()),
             price_type: None,
             timestamp_range: None,
+            timestamp_bounds: None,
             table_name: "renewable_energy_timeseries".to_string(),
         };
 
@@ -1083,6 +1135,7 @@ mod tests {
                 start: "2024-10-25".to_string(),
                 end: "2024-10-24".to_string(), // Invalid: end < start
             }),
+            timestamp_bounds: None,
             table_name: "renewable_energy_timeseries".to_string(),
         };
 
@@ -1103,6 +1156,7 @@ mod tests {
                 start: "2024-10-24".to_string(),
                 end: "2024-10-25".to_string(),
             }),
+            timestamp_bounds: None,
             table_name: "electricity_market_prices".to_string(),
         };
 
@@ -1128,6 +1182,7 @@ mod tests {
                 start: "2024-10-24".to_string(),
                 end: "2024-10-25".to_string(),
             }),
+            timestamp_bounds: None,
             table_name: "electricity_market_prices".to_string(),
         };
 
@@ -1148,6 +1203,7 @@ mod tests {
             data_category: None,
             price_type: Some("spot_market".to_string()),
             timestamp_range: None,
+            timestamp_bounds: None,
             table_name: "electricity_market_prices".to_string(),
         };
 
@@ -1172,6 +1228,7 @@ mod tests {
                 start: "2024-10-24".to_string(),
                 end: "2024-10-25".to_string(),
             }),
+            timestamp_bounds: None,
             table_name: "renewable_energy_timeseries".to_string(),
         };
 
@@ -1191,6 +1248,7 @@ mod tests {
                 start: "2024-10-24".to_string(),
                 end: "2024-10-25".to_string(),
             }),
+            timestamp_bounds: None,
             table_name: "electricity_market_prices".to_string(),
         };
 
@@ -1207,6 +1265,7 @@ mod tests {
             data_category: None,
             price_type: None,
             timestamp_range: None,
+            timestamp_bounds: None,
             table_name: "unknown_table".to_string(),
         };
 
@@ -1223,6 +1282,7 @@ mod tests {
                 start: "2024-10-23".to_string(),
                 end: "2024-10-24".to_string(),
             }),
+            timestamp_bounds: None,
             table_name: "redispatch_events".to_string(),
         };
 
@@ -1241,6 +1301,7 @@ mod tests {
                 start: "2024-10-24".to_string(),
                 end: "2024-10-25".to_string(),
             }),
+            timestamp_bounds: None,
             table_name: "grid_status_timeseries".to_string(),
         };
 
@@ -1263,6 +1324,7 @@ mod tests {
                 start: "2024-10-23".to_string(),
                 end: "2024-10-24".to_string(),
             }),
+            timestamp_bounds: None,
             table_name: "redispatch_events".to_string(),
         };
 
@@ -1286,6 +1348,7 @@ mod tests {
             data_category: None,
             price_type: None,
             timestamp_range: None,
+            timestamp_bounds: None,
             table_name: "redispatch_events".to_string(),
         };
 
@@ -1308,6 +1371,7 @@ mod tests {
                 start: "2024-10-24".to_string(),
                 end: "2024-10-25".to_string(),
             }),
+            timestamp_bounds: None,
             table_name: "grid_status_timeseries".to_string(),
         };
 
@@ -1331,6 +1395,7 @@ mod tests {
             data_category: None,
             price_type: None,
             timestamp_range: None,
+            timestamp_bounds: None,
             table_name: "grid_status_timeseries".to_string(),
         };
 
@@ -1353,6 +1418,7 @@ mod tests {
                 start: "2024-10-25".to_string(),
                 end: "2024-10-24".to_string(), // Invalid: end < start
             }),
+            timestamp_bounds: None,
             table_name: "redispatch_events".to_string(),
         };
 
@@ -1369,6 +1435,7 @@ mod tests {
                 start: "2024-10-25".to_string(),
                 end: "2024-10-24".to_string(), // Invalid: end < start
             }),
+            timestamp_bounds: None,
             table_name: "grid_status_timeseries".to_string(),
         };
 
