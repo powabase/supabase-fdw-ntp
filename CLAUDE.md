@@ -10,15 +10,16 @@ This wrapper follows the WASM FDW architecture required for hosted Supabase inst
 
 ## Project Status
 
-**✅ v0.2.7 - Production Ready (93% Endpoints)**
+**✅ v0.2.8 - Production Ready (100% Endpoints)**
 
-- **Current Version:** v0.2.7
-- **Status:** Production-ready, 14/15 endpoints working (93% coverage)
+- **Current Version:** v0.2.8
+- **Status:** Production-ready, 15/15 endpoints working (100% coverage) 🎉
 - **Tables:** 4 (renewable energy, electricity prices, redispatch events, grid status) - ALL WORKING ✅
-- **API Endpoints:** 14/15 endpoints functional (only marktpraemie format unknown)
-- **WASM Binary:** ~320 KB, validated, zero WASI CLI imports ✅
-- **Tests:** 176+ unit tests passing ✅
+- **API Endpoints:** 15/15 endpoints functional (100% completion) ✅
+- **WASM Binary:** ~326 KB, validated, zero WASI CLI imports ✅
+- **Tests:** 185+ unit tests passing ✅
 - **Query Performance:** Single endpoint ~200-500ms, 3 parallel ~600-1500ms ✅
+- **New in v0.2.8:** Marktpraemie monthly premium parser with UNPIVOT logic (100% endpoint coverage achieved) ✅
 - **New in v0.2.7:** Jahresmarktpraemie pipe-delimited parser (annual market value 2020-2024 accessible) ✅
 - **Fixed in v0.2.6:** 2 production bug fixes (YELLOW_NEG grid status variants, Jahresmarktpraemie URL construction) ✅
 - **Fixed in v0.2.5:** 5 critical bug fixes (redispatch aggregation, GENERATED columns, midnight crossing, NegativePreise parser, table detection) ✅
@@ -302,8 +303,8 @@ fn matches_timestamp_bounds(timestamp_str: &str, bounds: &TimestampBounds) -> bo
 ## Version Coordination
 
 **Important:** Keep versions synchronized across:
-- `Cargo.toml` - version = "0.2.7"
-- `wit/world.wit` - package powabase:supabase-fdw-ntp@0.2.7
+- `Cargo.toml` - version = "0.2.8"
+- `wit/world.wit` - package powabase:supabase-fdw-ntp@0.2.8
 - `CLAUDE.md` - Current Version section (this file)
 
 All three must match for successful builds and releases.
@@ -316,6 +317,6 @@ All three must match for successful builds and releases.
 
 ---
 
-**Version:** v0.2.7
+**Version:** v0.2.8
 **Last Updated:** 2025-10-26
-**Status:** Production Ready - 93% Endpoint Coverage (14/15)
+**Status:** Production Ready - 100% Endpoint Coverage (15/15)

@@ -1,6 +1,6 @@
 [package]
 name = "supabase-fdw-ntp"
-version = "0.2.7"
+version = "0.2.8"
 edition = "2021"
 authors = ["Powabase Team"]
 description = "Supabase WASM Foreign Data Wrapper for German NTP Energy Market API"

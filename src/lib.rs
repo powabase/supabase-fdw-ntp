@@ -1181,8 +1181,21 @@ fn parse_endpoint_response(
                                     plan.api_url, e
                                 )
                             })?
+                    } else if plan.endpoint == "marktpraemie" {
+                        // Monthly endpoint uses CSV with UNPIVOT logic
+                        csv_parser::parse_monthly_price_csv(
+                            &response_body,
+                            &plan.date_from,
+                            &plan.date_to,
+                        )
+                        .map_err(|e| {
+                            format!(
+                                "Failed to parse monthly price CSV from {}: {}",
+                                plan.api_url, e
+                            )
+                        })?
                     } else {
-                        // Standard CSV format for all other price endpoints
+                        // Standard CSV format for all other price endpoints (Spotmarktpreise)
                         csv_parser::parse_price_csv(
                             &response_body,
                             &plan.endpoint,

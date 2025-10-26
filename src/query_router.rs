@@ -161,7 +161,7 @@ pub struct TimestampBounds {
 /// Handles different URL formats for different endpoints:
 /// - **Standard endpoints:** `/endpoint/date_from/date_to`
 /// - **Annual endpoint (Jahresmarktpraemie):** `/endpoint/YYYY` (year only)
-/// - **Monthly endpoint (marktpraemie):** `/endpoint/YYYY/MM` (year and month)
+/// - **Monthly endpoint (marktpraemie):** `/endpoint/MM/YYYY/MM/YYYY` (monthFrom/yearFrom/monthTo/yearTo)
 /// - **Product-based endpoints:** `/endpoint/product/date_from/date_to`
 ///
 /// # Arguments
@@ -200,15 +200,15 @@ pub struct TimestampBounds {
 /// );
 /// assert_eq!(url, "https://www.netztransparenz.de/api/ntp/Jahresmarktpraemie/2024");
 ///
-/// // Monthly endpoint (year/month)
+/// // Monthly endpoint (monthFrom/yearFrom/monthTo/yearTo)
 /// let url = build_api_url(
 ///     "https://www.netztransparenz.de/api/ntp",
 ///     "marktpraemie",
 ///     None,
-///     "2024-10-01",
-///     "2024-10-31"
+///     "2024-01-01",
+///     "2024-03-31"
 /// );
-/// assert_eq!(url, "https://www.netztransparenz.de/api/ntp/marktpraemie/2024/10");
+/// assert_eq!(url, "https://www.netztransparenz.de/api/ntp/marktpraemie/01/2024/03/2024");
 ///
 /// // Product-based endpoint (date range with product)
 /// let url = build_api_url(
@@ -237,12 +237,17 @@ pub fn build_api_url(
         return format!("{}/{}/{}", base, endpoint, year);
     }
 
-    // Special handling for marktpraemie (year/month endpoint)
+    // Special handling for marktpraemie (monthFrom/yearFrom/monthTo/yearTo endpoint)
     if endpoint == "marktpraemie" {
-        // Extract year and month from date_from (YYYY-MM-DD -> YYYY and MM)
-        let year = &date_from[0..4];
-        let month = &date_from[5..7];
-        return format!("{}/{}/{}/{}", base, endpoint, year, month);
+        // Extract month and year from both date_from and date_to (YYYY-MM-DD)
+        let month_from = &date_from[5..7];
+        let year_from = &date_from[0..4];
+        let month_to = &date_to[5..7];
+        let year_to = &date_to[0..4];
+        return format!(
+            "{}/{}/{}/{}/{}/{}",
+            base, endpoint, month_from, year_from, month_to, year_to
+        );
     }
 
     // Standard handling for all other endpoints (date range format)
@@ -895,17 +900,17 @@ mod tests {
 
     #[test]
     fn test_build_api_url_monthly_endpoint() {
-        // marktpraemie uses year/month format
+        // marktpraemie uses monthFrom/yearFrom/monthTo/yearTo format
         let url = build_api_url(
             "https://www.netztransparenz.de/api/ntp",
             "marktpraemie",
             None,
             "2024-10-01",
-            "2024-10-31",
+            "2024-12-31",
         );
         assert_eq!(
             url,
-            "https://www.netztransparenz.de/api/ntp/marktpraemie/2024/10"
+            "https://www.netztransparenz.de/api/ntp/marktpraemie/10/2024/12/2024"
         );
     }
 
@@ -916,12 +921,28 @@ mod tests {
             "https://www.netztransparenz.de/api/ntp",
             "marktpraemie",
             None,
-            "2024-09-01",
-            "2024-09-30",
+            "2024-01-01",
+            "2024-03-31",
         );
         assert_eq!(
             url,
-            "https://www.netztransparenz.de/api/ntp/marktpraemie/2024/09"
+            "https://www.netztransparenz.de/api/ntp/marktpraemie/01/2024/03/2024"
+        );
+    }
+
+    #[test]
+    fn test_build_api_url_monthly_endpoint_cross_year() {
+        // Verify cross-year date ranges work correctly (Nov 2023 → Feb 2024)
+        let url = build_api_url(
+            "https://www.netztransparenz.de/api/ntp",
+            "marktpraemie",
+            None,
+            "2023-11-01",
+            "2024-02-28",
+        );
+        assert_eq!(
+            url,
+            "https://www.netztransparenz.de/api/ntp/marktpraemie/11/2023/02/2024"
         );
     }
 

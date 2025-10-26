@@ -606,6 +606,181 @@ fn normalize_annual_product(category: &str) -> String {
     }
 }
 
+/// Parse monthly market premium response (marktpraemie)
+///
+/// The marktpraemie endpoint returns CSV with one row per month containing
+/// multiple product columns that need to be UNPIVOTED:
+///
+/// ```text
+/// Monat;MW-EPEX in ct/kWh;MW Wind Onshore in ct/kWh;MW Wind Offshore in ct/kWh;MW Solar in ct/kWh;...
+/// 1/2020;3,503;3,091;3,321;3,831;...
+/// 2/2020;2,192;1,680;1,920;2,319;...
+/// ```
+///
+/// # Format
+///
+/// - **Delimiter:** Semicolon (`;`)
+/// - **Decimal separator:** Comma (`,`) - German format
+/// - **Structure:** 1 CSV row → 4 database rows (UNPIVOT)
+/// - **Monat format:** `{month}/{year}` (e.g., "1/2020", "10/2024")
+///
+/// # Arguments
+///
+/// * `csv_content` - Raw CSV response from API
+/// * `date_from` - Start date for metadata (not used in parsing)
+/// * `date_to` - End date for metadata (not used in parsing)
+///
+/// # Returns
+///
+/// Vector of PriceRow with:
+/// - `timestamp_utc`: First day of month (e.g., "2020-01-01T00:00:00Z")
+/// - `interval_end_utc`: Last day of month (e.g., "2020-01-31T23:59:59Z")
+/// - `granularity`: "monthly"
+/// - `price_type`: "market_premium"
+/// - `price_eur_mwh`: Converted from API (ct/kWh × 10 = EUR/MWh)
+/// - `product_category`: "base", "wind_onshore", "wind_offshore", "solar"
+///
+/// # Example
+///
+/// ```
+/// # use supabase_fdw_ntp::csv_parser::parse_monthly_price_csv;
+/// let csv = "Monat;MW-EPEX in ct/kWh;MW Wind Onshore in ct/kWh;MW Wind Offshore in ct/kWh;MW Solar in ct/kWh\n1/2020;3,503;3,091;3,321;3,831";
+/// let rows = parse_monthly_price_csv(csv, "2020-01-01", "2020-12-31").unwrap();
+/// assert_eq!(rows.len(), 4); // 1 CSV row → 4 database rows
+/// ```
+pub fn parse_monthly_price_csv(
+    csv_content: &str,
+    _date_from: &str,
+    _date_to: &str,
+) -> Result<Vec<PriceRow>, NtpFdwError> {
+    // Stop at metadata footer
+    let csv_data = csv_content.split("===").next().unwrap_or(csv_content);
+
+    // Configure CSV reader for German format
+    let mut reader = ReaderBuilder::new()
+        .delimiter(b';')
+        .has_headers(true)
+        .trim(csv::Trim::All)
+        .from_reader(csv_data.as_bytes());
+
+    // Get headers
+    let headers = reader
+        .headers()
+        .map_err(|e| {
+            if csv_data.is_empty() {
+                NtpFdwError::from(ApiError::EmptyResponse)
+            } else {
+                NtpFdwError::from(ParseError::CsvFormat(format!(
+                    "Failed to read CSV headers: {}",
+                    e
+                )))
+            }
+        })?
+        .clone();
+
+    // Validate required columns
+    let required_columns = ["Monat", "MW-EPEX in ct/kWh", "MW Wind Onshore in ct/kWh",
+                           "MW Wind Offshore in ct/kWh", "MW Solar in ct/kWh"];
+    for col in &required_columns {
+        if !headers.iter().any(|h| h == *col) {
+            return Err(ParseError::MissingColumn(col.to_string()).into());
+        }
+    }
+
+    let mut rows = Vec::new();
+
+    // Parse each month row
+    for result in reader.records() {
+        let record =
+            result.map_err(|e| ParseError::CsvFormat(format!("CSV parse error: {}", e)))?;
+
+        // Extract month field (format: "1/2020", "10/2024")
+        let monat = get_field(&record, &headers, "Monat")?;
+
+        // Parse month/year
+        let parts: Vec<&str> = monat.split('/').collect();
+        if parts.len() != 2 {
+            return Err(ParseError::InvalidTimestamp(format!(
+                "Invalid Monat format: expected 'M/YYYY', got '{}'",
+                monat
+            ))
+            .into());
+        }
+
+        let month: u32 = parts[0].parse().map_err(|_| {
+            ParseError::InvalidTimestamp(format!("Invalid month: {}", parts[0]))
+        })?;
+        let year: i32 = parts[1].parse().map_err(|_| {
+            ParseError::InvalidTimestamp(format!("Invalid year: {}", parts[1]))
+        })?;
+
+        // Validate month range
+        if !(1..=12).contains(&month) {
+            return Err(ParseError::InvalidTimestamp(format!(
+                "Month out of range: {} (must be 1-12)",
+                month
+            ))
+            .into());
+        }
+
+        // Calculate timestamps for the month
+        let timestamp_utc = format!("{:04}-{:02}-01T00:00:00Z", year, month);
+
+        // Calculate last day of month
+        let last_day = match month {
+            2 => {
+                // Leap year calculation
+                if (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0) {
+                    29
+                } else {
+                    28
+                }
+            }
+            4 | 6 | 9 | 11 => 30,
+            _ => 31,
+        };
+        let interval_end_utc = format!("{:04}-{:02}-{:02}T23:59:59Z", year, month, last_day);
+
+        // Define product columns to UNPIVOT
+        let products = vec![
+            ("MW-EPEX in ct/kWh", "base"),
+            ("MW Wind Onshore in ct/kWh", "wind_onshore"),
+            ("MW Wind Offshore in ct/kWh", "wind_offshore"),
+            ("MW Solar in ct/kWh", "solar"),
+        ];
+
+        // UNPIVOT: Create one row per product
+        for (column_name, product_category) in products {
+            let price_str = get_field(&record, &headers, column_name)?;
+
+            // Skip empty values
+            if price_str.trim().is_empty() {
+                continue;
+            }
+
+            // Parse German decimal (comma → period)
+            let price_ct_kwh = parse_german_decimal(price_str)?;
+
+            // Convert ct/kWh → EUR/MWh (multiply by 10)
+            let price_eur_mwh = price_ct_kwh * 10.0;
+
+            rows.push(PriceRow {
+                timestamp_utc: timestamp_utc.clone(),
+                interval_end_utc: interval_end_utc.clone(),
+                granularity: "monthly".to_string(),
+                price_type: "market_premium".to_string(),
+                price_eur_mwh: Some(price_eur_mwh),
+                product_category: Some(product_category.to_string()),
+                negative_logic_hours: None,
+                negative_flag_value: None,
+                source_endpoint: "marktpraemie".to_string(),
+            });
+        }
+    }
+
+    Ok(rows)
+}
+
 // ============================================================================
 // TESTS
 // ============================================================================
@@ -1007,5 +1182,133 @@ SIZE:142"#;
         let rows_2020 = parse_annual_price_response(response, "2020").unwrap();
         assert_eq!(rows_2020[0].timestamp_utc, "2020-01-01T00:00:00Z");
         assert_eq!(rows_2020[0].interval_end_utc, "2020-12-31T23:59:59Z");
+    }
+
+    // ========================================================================
+    // parse_monthly_price_csv Tests
+    // ========================================================================
+
+    #[test]
+    fn test_parse_monthly_price_csv_valid() {
+        // Actual format from marktpraemie endpoint
+        let csv = r#"Monat;MW-EPEX in ct/kWh;MW Wind Onshore in ct/kWh;PM Wind Onshore fernsteuerbar in ct/kWh;MW Wind Offshore in ct/kWh;PM Wind Offshore fernsteuerbar in ct/kWh;MW Solar in ct/kWh;PM Solar fernsteuerbar in ct/kWh;MW steuerbar in ct/kWh;PM steuerbar in ct/kWh;Negative Stunden (6H);Negative Stunden (4H);Negative Stunden (3H);Negative Stunden (1H);Negative Stunden (15MIN)
+1/2020;3,503;3,091;0,400;3,321;0,400;3,831;0,400;3,503;0,200;Nein;Nein;;Ja;
+2/2020;2,192;1,680;0,400;1,920;0,400;2,319;0,400;2,192;0,200;Ja;Ja;;Ja;"#;
+
+        let rows = parse_monthly_price_csv(csv, "2020-01-01", "2020-02-29").unwrap();
+
+        // 2 months × 4 products = 8 rows
+        assert_eq!(rows.len(), 8);
+
+        // Check first row (January 2020, base product)
+        assert_eq!(rows[0].timestamp_utc, "2020-01-01T00:00:00Z");
+        assert_eq!(rows[0].interval_end_utc, "2020-01-31T23:59:59Z");
+        assert_eq!(rows[0].granularity, "monthly");
+        assert_eq!(rows[0].price_type, "market_premium");
+        assert_eq!(rows[0].product_category, Some("base".to_string()));
+        assert_eq!(rows[0].price_eur_mwh, Some(35.03)); // 3.503 ct/kWh × 10
+        assert_eq!(rows[0].source_endpoint, "marktpraemie");
+
+        // Check UNPIVOT worked: same timestamp, different products
+        assert_eq!(rows[1].timestamp_utc, "2020-01-01T00:00:00Z");
+        assert_eq!(rows[1].product_category, Some("wind_onshore".to_string()));
+        assert!((rows[1].price_eur_mwh.unwrap() - 30.91).abs() < 0.01); // 3.091 ct/kWh × 10
+
+        assert_eq!(rows[2].timestamp_utc, "2020-01-01T00:00:00Z");
+        assert_eq!(rows[2].product_category, Some("wind_offshore".to_string()));
+        assert!((rows[2].price_eur_mwh.unwrap() - 33.21).abs() < 0.01); // 3.321 ct/kWh × 10
+
+        assert_eq!(rows[3].timestamp_utc, "2020-01-01T00:00:00Z");
+        assert_eq!(rows[3].product_category, Some("solar".to_string()));
+        assert!((rows[3].price_eur_mwh.unwrap() - 38.31).abs() < 0.01); // 3.831 ct/kWh × 10
+
+        // Check February 2020 (leap year - 29 days)
+        assert_eq!(rows[4].timestamp_utc, "2020-02-01T00:00:00Z");
+        assert_eq!(rows[4].interval_end_utc, "2020-02-29T23:59:59Z");
+        assert_eq!(rows[4].product_category, Some("base".to_string()));
+    }
+
+    #[test]
+    fn test_parse_monthly_price_csv_leap_year() {
+        let csv = r#"Monat;MW-EPEX in ct/kWh;MW Wind Onshore in ct/kWh;MW Wind Offshore in ct/kWh;MW Solar in ct/kWh
+2/2020;2,192;1,680;1,920;2,319
+2/2021;3,000;2,500;2,800;3,200"#;
+
+        let rows = parse_monthly_price_csv(csv, "2020-02-01", "2021-02-28").unwrap();
+
+        // Check leap year (2020) has 29 days
+        assert_eq!(rows[0].timestamp_utc, "2020-02-01T00:00:00Z");
+        assert_eq!(rows[0].interval_end_utc, "2020-02-29T23:59:59Z");
+
+        // Check non-leap year (2021) has 28 days
+        assert_eq!(rows[4].timestamp_utc, "2021-02-01T00:00:00Z");
+        assert_eq!(rows[4].interval_end_utc, "2021-02-28T23:59:59Z");
+    }
+
+    #[test]
+    fn test_parse_monthly_price_csv_different_month_lengths() {
+        let csv = r#"Monat;MW-EPEX in ct/kWh;MW Wind Onshore in ct/kWh;MW Wind Offshore in ct/kWh;MW Solar in ct/kWh
+1/2024;3,000;2,500;2,800;3,200
+4/2024;3,100;2,600;2,900;3,300
+9/2024;3,200;2,700;3,000;3,400"#;
+
+        let rows = parse_monthly_price_csv(csv, "2024-01-01", "2024-09-30").unwrap();
+
+        // January (31 days)
+        assert_eq!(rows[0].interval_end_utc, "2024-01-31T23:59:59Z");
+
+        // April (30 days)
+        assert_eq!(rows[4].interval_end_utc, "2024-04-30T23:59:59Z");
+
+        // September (30 days)
+        assert_eq!(rows[8].interval_end_utc, "2024-09-30T23:59:59Z");
+    }
+
+    #[test]
+    fn test_parse_monthly_price_csv_german_decimals() {
+        let csv = r#"Monat;MW-EPEX in ct/kWh;MW Wind Onshore in ct/kWh;MW Wind Offshore in ct/kWh;MW Solar in ct/kWh
+10/2024;123,456;78,901;234,567;345,678"#;
+
+        let rows = parse_monthly_price_csv(csv, "2024-10-01", "2024-10-31").unwrap();
+
+        // Check German decimal conversion (comma → period, then × 10)
+        assert!((rows[0].price_eur_mwh.unwrap() - 1234.56).abs() < 0.01);
+        assert!((rows[1].price_eur_mwh.unwrap() - 789.01).abs() < 0.01);
+        assert!((rows[2].price_eur_mwh.unwrap() - 2345.67).abs() < 0.01);
+        assert!((rows[3].price_eur_mwh.unwrap() - 3456.78).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_parse_monthly_price_csv_empty() {
+        let csv = "";
+        let result = parse_monthly_price_csv(csv, "2024-01-01", "2024-12-31");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_monthly_price_csv_missing_column() {
+        let csv = r#"Monat;MW-EPEX in ct/kWh
+1/2020;3,503"#;
+
+        let result = parse_monthly_price_csv(csv, "2020-01-01", "2020-12-31");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_monthly_price_csv_invalid_month_format() {
+        let csv = r#"Monat;MW-EPEX in ct/kWh;MW Wind Onshore in ct/kWh;MW Wind Offshore in ct/kWh;MW Solar in ct/kWh
+2024-10-01;3,503;3,091;3,321;3,831"#;
+
+        let result = parse_monthly_price_csv(csv, "2024-10-01", "2024-10-31");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_monthly_price_csv_invalid_month_range() {
+        let csv = r#"Monat;MW-EPEX in ct/kWh;MW Wind Onshore in ct/kWh;MW Wind Offshore in ct/kWh;MW Solar in ct/kWh
+13/2024;3,503;3,091;3,321;3,831"#;
+
+        let result = parse_monthly_price_csv(csv, "2024-01-01", "2024-12-31");
+        assert!(result.is_err());
     }
 }

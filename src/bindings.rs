@@ -6029,7 +6029,7 @@ macro_rules! __export_ntp_fdw_impl {
 pub(crate) use __export_ntp_fdw_impl as export;
 #[cfg(target_arch = "wasm32")]
 #[unsafe(
-    link_section = "component-type:wit-bindgen:0.41.0:powabase:supabase-fdw-ntp@0.2.7:ntp-fdw:encoded world"
+    link_section = "component-type:wit-bindgen:0.41.0:powabase:supabase-fdw-ntp@0.2.8:ntp-fdw:encoded world"
 )]
 #[doc(hidden)]
 #[allow(clippy::octal_escapes)]
@@ -6117,7 +6117,7 @@ insert\x01\x13\x01@\x03\x03ctx\x0d\x05rowid\x01\x07new-row\x0f\0\x0b\x04\0\x06up
 date\x01\x14\x01@\x02\x03ctx\x0d\x05rowid\x01\0\x0b\x04\0\x06delete\x01\x15\x04\0\
 \x0aend-modify\x01\x0e\x01ps\x01j\x01\x16\x01\x09\x01@\x02\x03ctx\x0d\x04stmt\x05\
 \0\x17\x04\0\x15import-foreign-schema\x01\x18\x04\0\x20supabase:wrappers/routine\
-s@0.2.0\x05\x0b\x04\0'powabase:supabase-fdw-ntp/ntp-fdw@0.2.7\x04\0\x0b\x0d\x01\0\
+s@0.2.0\x05\x0b\x04\0'powabase:supabase-fdw-ntp/ntp-fdw@0.2.8\x04\0\x0b\x0d\x01\0\
 \x07ntp-fdw\x03\0\0\0G\x09producers\x01\x0cprocessed-by\x02\x0dwit-component\x07\
 0.227.1\x10wit-bindgen-rust\x060.41.0";
 #[inline(never)]

@@ -227,7 +227,7 @@ Some filters cannot be pushed to API and must be applied locally:
 
 **marktpraemie:**
 ```
-/marktpraemie/{year}/{month}
+/marktpraemie/{monthFrom}/{yearFrom}/{monthTo}/{yearTo}
 ```
 
 **Jahresmarktpraemie:**
@@ -243,7 +243,7 @@ Some filters cannot be pushed to API and must be applied locally:
 |-----------------|-------------|-------------|
 | `price_type = 'spot_market'` | `/Spotmarktpreise/{dateFrom}/{dateTo}` | Hourly |
 | `price_type = 'negative_flag'` | `/NegativePreise/{dateFrom}/{dateTo}` | Hourly (flags) |
-| `price_type = 'market_premium'` | `/marktpraemie/{year}/{month}` | Monthly |
+| `price_type = 'market_premium'` | `/marktpraemie/{monthFrom}/{yearFrom}/{monthTo}/{yearTo}` | Monthly |
 | `price_type = 'annual_market_value'` | `/Jahresmarktpraemie/{year}` | Annual |
 | No filter | ALL endpoints | Mixed granularity |
 
@@ -270,9 +270,11 @@ fn build_price_endpoint(price_type: &str, timestamp: DateTime<Utc>) -> String {
             )
         },
         "market_premium" => {
-            let year = timestamp.format("%Y");
-            let month = timestamp.format("%m");
-            format!("/marktpraemie/{}/{}", year, month)
+            let month_from = timestamp_from.format("%m");
+            let year_from = timestamp_from.format("%Y");
+            let month_to = timestamp_to.format("%m");
+            let year_to = timestamp_to.format("%Y");
+            format!("/marktpraemie/{}/{}/{}/{}", month_from, year_from, month_to, year_to)
         },
         "annual_market_value" => {
             let year = timestamp.format("%Y");
