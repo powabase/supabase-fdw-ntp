@@ -10,16 +10,18 @@ This wrapper follows the WASM FDW architecture required for hosted Supabase inst
 
 ## Project Status
 
-**✅ v0.2.5 - Critical Bug Fixes**
+**✅ v0.2.7 - Production Ready (93% Endpoints)**
 
-- **Current Version:** v0.2.5
-- **Status:** Production-ready, 5 critical bugs FIXED (table detection, GENERATED columns, midnight crossing, NegativePreise)
-- **Tables:** 4 (renewable energy, electricity prices, redispatch events, grid status)
-- **API Endpoints:** 15 endpoints consolidated into 4 tables
-- **WASM Binary:** ~307 KB, validated, zero WASI CLI imports ✅
-- **Tests:** 164+ unit tests passing ✅
+- **Current Version:** v0.2.7
+- **Status:** Production-ready, 14/15 endpoints working (93% coverage)
+- **Tables:** 4 (renewable energy, electricity prices, redispatch events, grid status) - ALL WORKING ✅
+- **API Endpoints:** 14/15 endpoints functional (only marktpraemie format unknown)
+- **WASM Binary:** ~320 KB, validated, zero WASI CLI imports ✅
+- **Tests:** 176+ unit tests passing ✅
 - **Query Performance:** Single endpoint ~200-500ms, 3 parallel ~600-1500ms ✅
-- **New in v0.2.5:** 5 critical bug fixes (redispatch aggregation, GENERATED columns, midnight crossing, NegativePreise parser, table detection) ✅
+- **New in v0.2.7:** Jahresmarktpraemie pipe-delimited parser (annual market value 2020-2024 accessible) ✅
+- **Fixed in v0.2.6:** 2 production bug fixes (YELLOW_NEG grid status variants, Jahresmarktpraemie URL construction) ✅
+- **Fixed in v0.2.5:** 5 critical bug fixes (redispatch aggregation, GENERATED columns, midnight crossing, NegativePreise parser, table detection) ✅
 - **Fixed in v0.2.4:** Cross-day time range auto-adjustment (complete time filtering) ✅
 - **Fixed in v0.2.3:** Same-date query auto-adjustment (exclusive end date fix) ✅
 - **Fixed in v0.2.2:** String timestamp parsing (time-based filtering fully functional) ✅
@@ -300,8 +302,8 @@ fn matches_timestamp_bounds(timestamp_str: &str, bounds: &TimestampBounds) -> bo
 ## Version Coordination
 
 **Important:** Keep versions synchronized across:
-- `Cargo.toml` - version = "0.2.4"
-- `wit/world.wit` - package powabase:supabase-fdw-ntp@0.2.4
+- `Cargo.toml` - version = "0.2.7"
+- `wit/world.wit` - package powabase:supabase-fdw-ntp@0.2.7
 - `CLAUDE.md` - Current Version section (this file)
 
 All three must match for successful builds and releases.
@@ -314,6 +316,6 @@ All three must match for successful builds and releases.
 
 ---
 
-**Version:** v0.2.5
+**Version:** v0.2.7
 **Last Updated:** 2025-10-26
-**Status:** Production Ready - Critical Bug Fixes
+**Status:** Production Ready - 93% Endpoint Coverage (14/15)

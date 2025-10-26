@@ -454,6 +454,158 @@ pub fn parse_negative_price_flags_csv(
     Ok(rows)
 }
 
+/// Parse annual market value response (Jahresmarktpraemie)
+///
+/// The Jahresmarktpraemie endpoint returns line-separated key-value pairs instead of CSV:
+/// ```text
+/// Alle Werte in ct/kWh;2024
+/// JW;7,946
+/// JW Wind an Land;6,293
+/// JW Wind auf See;6,777
+/// JW Solar;4,624
+/// ```
+///
+/// # Format
+///
+/// - **Record separator:** Newline (`\n`)
+/// - **Field separator:** Semicolon (`;`)
+/// - **Decimal separator:** Comma (`,`) - German format
+/// - **Header:** First line contains metadata (filtered out)
+/// - **Structure:** `category;value` (one per line)
+///
+/// # Arguments
+///
+/// * `content` - Raw response body from API
+/// * `year` - Year for the data (e.g., "2024")
+///
+/// # Returns
+///
+/// Vector of PriceRow with:
+/// - `timestamp_utc`: January 1st of year (e.g., "2024-01-01T00:00:00Z")
+/// - `interval_end_utc`: December 31st of year (e.g., "2024-12-31T23:59:59Z")
+/// - `granularity`: "annual"
+/// - `price_type`: "annual_market_value"
+/// - `price_eur_mwh`: Converted from API (ct/kWh × 10 = EUR/MWh)
+/// - `product_category`: Normalized category
+///
+/// # Example
+///
+/// ```
+/// # use supabase_fdw_ntp::csv_parser::parse_annual_price_response;
+/// let response = "JW;7,946\nJW Solar;4,624";
+/// let rows = parse_annual_price_response(response, "2024").unwrap();
+/// assert_eq!(rows.len(), 2);
+/// assert_eq!(rows[0].price_eur_mwh, Some(79.46)); // 7.946 ct/kWh × 10
+/// assert_eq!(rows[0].product_category, Some("annual_overall".to_string()));
+/// assert_eq!(rows[1].product_category, Some("solar".to_string()));
+/// ```
+pub fn parse_annual_price_response(
+    content: &str,
+    year: &str,
+) -> Result<Vec<PriceRow>, NtpFdwError> {
+    // Handle empty response
+    if content.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Filter out header lines (e.g., "Alle Werte in ct/kWh;2024")
+    // Header lines typically contain words like "Alle", "Werte", or year only
+    let cleaned_content = content
+        .lines()
+        .filter(|line| {
+            let trimmed = line.trim();
+            // Skip empty lines
+            if trimmed.is_empty() {
+                return false;
+            }
+            // Skip header lines (contains "Alle" or starts with metadata)
+            if trimmed.to_lowercase().contains("alle") || trimmed.to_lowercase().contains("werte") {
+                return false;
+            }
+            // Skip lines that are just a year
+            if trimmed.len() == 4 && trimmed.parse::<i32>().is_ok() {
+                return false;
+            }
+            true
+        })
+        .collect::<Vec<&str>>()
+        .join("\n");
+
+    // Split by newlines to get individual items (not pipes!)
+    let items: Vec<&str> = cleaned_content
+        .lines()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    let mut rows = Vec::new();
+
+    // Parse each item
+    for item in items {
+        // Split by semicolon to get category and value
+        let parts: Vec<&str> = item.split(';').map(|s| s.trim()).collect();
+
+        if parts.len() != 2 {
+            return Err(NtpFdwError::from(ParseError::CsvFormat(format!(
+                "Invalid annual format: expected 'category;value', got '{}' (parts: {})",
+                item,
+                parts.len()
+            ))));
+        }
+
+        let category = parts[0];
+        let price_str = parts[1];
+
+        // Parse German decimal (comma → period)
+        let price_ct_kwh = parse_german_decimal(price_str)?;
+
+        // Convert ct/kWh → EUR/MWh (multiply by 10)
+        let price_eur_mwh = price_ct_kwh * 10.0;
+
+        // Generate timestamps for full year
+        let timestamp_utc = format!("{}-01-01T00:00:00Z", year);
+        let interval_end_utc = format!("{}-12-31T23:59:59Z", year);
+
+        // Normalize product category
+        let product_category = normalize_annual_product(category);
+
+        rows.push(PriceRow {
+            timestamp_utc,
+            interval_end_utc,
+            granularity: "annual".to_string(),
+            price_type: "annual_market_value".to_string(),
+            price_eur_mwh: Some(price_eur_mwh),
+            product_category: Some(product_category),
+            negative_logic_hours: None,
+            negative_flag_value: None,
+            source_endpoint: "Jahresmarktpraemie".to_string(),
+        });
+    }
+
+    Ok(rows)
+}
+
+/// Normalize annual product category names
+///
+/// Converts German category names from Jahresmarktpraemie API to consistent product names.
+///
+/// # Mappings
+///
+/// - `"JW"` → `"annual_overall"` (comprehensive annual value)
+/// - `"JW Wind an Land"` → `"wind_onshore"`
+/// - `"JW Wind auf See"` → `"wind_offshore"`
+/// - `"JW Solar"` → `"solar"`
+/// - Other → Lowercased with underscores
+fn normalize_annual_product(category: &str) -> String {
+    match category.trim() {
+        "JW" => "annual_overall".to_string(),
+        "JW Wind an Land" => "wind_onshore".to_string(),
+        "JW Wind auf See" => "wind_offshore".to_string(),
+        "JW Solar" => "solar".to_string(),
+        other => other.to_lowercase().replace(' ', "_"),
+    }
+}
+
 // ============================================================================
 // TESTS
 // ============================================================================
@@ -752,5 +904,108 @@ SIZE:142"#;
 
         // Should parse 1 row and stop at ===
         assert_eq!(rows.len(), 1);
+    }
+
+    // ========================================================================
+    // parse_annual_price_response Tests
+    // ========================================================================
+
+    #[test]
+    fn test_parse_annual_price_response_valid() {
+        // Actual format from Jahresmarktpraemie endpoint (line-separated with header)
+        let response = "Alle Werte in ct/kWh;2024\nJW;7,946\nJW Wind an Land;6,293\nJW Wind auf See;6,777\nJW Solar;4,624";
+
+        let rows = parse_annual_price_response(response, "2024").unwrap();
+
+        assert_eq!(rows.len(), 4);
+
+        // Check first row (JW - overall annual value)
+        assert_eq!(rows[0].timestamp_utc, "2024-01-01T00:00:00Z");
+        assert_eq!(rows[0].interval_end_utc, "2024-12-31T23:59:59Z");
+        assert_eq!(rows[0].granularity, "annual");
+        assert_eq!(rows[0].price_type, "annual_market_value");
+        assert_eq!(rows[0].product_category, Some("annual_overall".to_string()));
+        // Price conversion: 7.946 ct/kWh × 10 = 79.46 EUR/MWh
+        assert_eq!(rows[0].price_eur_mwh, Some(79.46));
+        assert_eq!(rows[0].source_endpoint, "Jahresmarktpraemie");
+
+        // Check product normalization
+        assert_eq!(rows[1].product_category, Some("wind_onshore".to_string()));
+        assert_eq!(rows[2].product_category, Some("wind_offshore".to_string()));
+        assert_eq!(rows[3].product_category, Some("solar".to_string()));
+    }
+
+    #[test]
+    fn test_parse_annual_price_response_german_decimals() {
+        // Test German decimal format (comma as decimal separator)
+        let response = "JW;10,5\nJW Solar;3,142";
+
+        let rows = parse_annual_price_response(response, "2023").unwrap();
+
+        assert_eq!(rows.len(), 2);
+        // 10.5 ct/kWh × 10 = 105.0 EUR/MWh
+        assert_eq!(rows[0].price_eur_mwh, Some(105.0));
+        // 3.142 ct/kWh × 10 = 31.42 EUR/MWh (use approximate comparison for floating point)
+        assert!((rows[1].price_eur_mwh.unwrap() - 31.42).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_parse_annual_price_response_empty() {
+        let response = "";
+        let rows = parse_annual_price_response(response, "2024").unwrap();
+        assert_eq!(rows.len(), 0);
+
+        // Test whitespace-only
+        let response2 = "   \n  \t  ";
+        let rows2 = parse_annual_price_response(response2, "2024").unwrap();
+        assert_eq!(rows2.len(), 0);
+    }
+
+    #[test]
+    fn test_parse_annual_price_response_malformed() {
+        // Missing semicolon separator
+        let response1 = "JW 7,946";
+        let result1 = parse_annual_price_response(response1, "2024");
+        assert!(result1.is_err());
+
+        // Too many parts (extra semicolons)
+        let response2 = "JW;7;946";
+        let result2 = parse_annual_price_response(response2, "2024");
+        assert!(result2.is_err());
+
+        // Empty lines between valid lines (should be filtered)
+        let response3 = "JW;7,946\n\nJW Solar;4,624";
+        let rows3 = parse_annual_price_response(response3, "2024").unwrap();
+        // Should skip empty lines, parse 2 valid ones
+        assert_eq!(rows3.len(), 2);
+    }
+
+    #[test]
+    fn test_parse_annual_price_response_product_normalization() {
+        let response = "JW;1,0\nJW Wind an Land;2,0\nJW Wind auf See;3,0\nJW Solar;4,0\nUnknown Category;5,0";
+
+        let rows = parse_annual_price_response(response, "2024").unwrap();
+
+        assert_eq!(rows.len(), 5);
+        assert_eq!(rows[0].product_category, Some("annual_overall".to_string()));
+        assert_eq!(rows[1].product_category, Some("wind_onshore".to_string()));
+        assert_eq!(rows[2].product_category, Some("wind_offshore".to_string()));
+        assert_eq!(rows[3].product_category, Some("solar".to_string()));
+        // Unknown category should be lowercased with underscores
+        assert_eq!(rows[4].product_category, Some("unknown_category".to_string()));
+    }
+
+    #[test]
+    fn test_parse_annual_price_response_timestamp_generation() {
+        let response = "JW;7,946";
+
+        // Test different years
+        let rows_2024 = parse_annual_price_response(response, "2024").unwrap();
+        assert_eq!(rows_2024[0].timestamp_utc, "2024-01-01T00:00:00Z");
+        assert_eq!(rows_2024[0].interval_end_utc, "2024-12-31T23:59:59Z");
+
+        let rows_2020 = parse_annual_price_response(response, "2020").unwrap();
+        assert_eq!(rows_2020[0].timestamp_utc, "2020-01-01T00:00:00Z");
+        assert_eq!(rows_2020[0].interval_end_utc, "2020-12-31T23:59:59Z");
     }
 }

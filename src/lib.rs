@@ -1169,13 +1169,31 @@ fn parse_endpoint_response(
                         plan.api_url, e
                     )
                 })?,
-                _ => csv_parser::parse_price_csv(
-                    &response_body,
-                    &plan.endpoint,
-                    &plan.date_from,
-                    &plan.date_to,
-                )
-                .map_err(|e| format!("Failed to parse price CSV from {}: {}", plan.api_url, e))?,
+                _ => {
+                    // Route to appropriate parser based on endpoint
+                    if plan.endpoint == "Jahresmarktpraemie" {
+                        // Annual endpoint uses pipe-delimited format, not CSV
+                        let year = &plan.date_from[0..4]; // Extract YYYY from YYYY-MM-DD
+                        csv_parser::parse_annual_price_response(&response_body, year)
+                            .map_err(|e| {
+                                format!(
+                                    "Failed to parse annual price response from {}: {}",
+                                    plan.api_url, e
+                                )
+                            })?
+                    } else {
+                        // Standard CSV format for all other price endpoints
+                        csv_parser::parse_price_csv(
+                            &response_body,
+                            &plan.endpoint,
+                            &plan.date_from,
+                            &plan.date_to,
+                        )
+                        .map_err(|e| {
+                            format!("Failed to parse price CSV from {}: {}", plan.api_url, e)
+                        })?
+                    }
+                }
             };
 
             all_price_rows.extend(rows);

@@ -754,8 +754,14 @@ pub fn parse_iso8601_timestamp(iso_string: &str) -> Result<String, ParseError> {
 /// # Valid Values
 ///
 /// - `"GREEN"` = Normal operation
+/// - `"GREEN_NEG"` = Normal operation with negative pricing signal
 /// - `"YELLOW"` = Elevated stress
+/// - `"YELLOW_NEG"` = Elevated stress with negative pricing signal
 /// - `"RED"` = Critical stress
+/// - `"RED_NEG"` = Critical stress with negative pricing signal
+///
+/// The `_NEG` suffix indicates a negative pricing signal from the electricity market.
+/// These variants were discovered from actual API responses (undocumented).
 ///
 /// # Examples
 ///
@@ -764,11 +770,14 @@ pub fn parse_iso8601_timestamp(iso_string: &str) -> Result<String, ParseError> {
 /// assert_eq!(validate_grid_status("GREEN").unwrap(), "GREEN");
 /// assert_eq!(validate_grid_status("YELLOW").unwrap(), "YELLOW");
 /// assert_eq!(validate_grid_status("RED").unwrap(), "RED");
+/// assert_eq!(validate_grid_status("YELLOW_NEG").unwrap(), "YELLOW_NEG");
 /// assert!(validate_grid_status("ORANGE").is_err());
 /// ```
 pub fn validate_grid_status(value: &str) -> Result<String, ParseError> {
     match value {
-        "GREEN" | "YELLOW" | "RED" => Ok(value.to_string()),
+        "GREEN" | "GREEN_NEG" | "YELLOW" | "YELLOW_NEG" | "RED" | "RED_NEG" => {
+            Ok(value.to_string())
+        }
         _ => Err(ParseError::InvalidGridStatus(value.to_string())),
     }
 }
@@ -1194,5 +1203,23 @@ mod tests {
         // Should be case-sensitive (uppercase only)
         let result = validate_grid_status("green");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_grid_status_green_neg() {
+        let result = validate_grid_status("GREEN_NEG").unwrap();
+        assert_eq!(result, "GREEN_NEG");
+    }
+
+    #[test]
+    fn test_validate_grid_status_yellow_neg() {
+        let result = validate_grid_status("YELLOW_NEG").unwrap();
+        assert_eq!(result, "YELLOW_NEG");
+    }
+
+    #[test]
+    fn test_validate_grid_status_red_neg() {
+        let result = validate_grid_status("RED_NEG").unwrap();
+        assert_eq!(result, "RED_NEG");
     }
 }

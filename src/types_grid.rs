@@ -142,8 +142,14 @@ pub struct GridStatusRow {
     ///
     /// Values:
     /// - "GREEN" = Normal operation (grid stable)
+    /// - "GREEN_NEG" = Normal operation with negative pricing signal
     /// - "YELLOW" = Elevated stress (congestion warning)
+    /// - "YELLOW_NEG" = Elevated stress with negative pricing signal
     /// - "RED" = Critical stress (high congestion, risk of intervention)
+    /// - "RED_NEG" = Critical stress with negative pricing signal
+    ///
+    /// Note: The `_NEG` suffix indicates negative pricing in the electricity market.
+    /// These variants were discovered from actual API responses (undocumented).
     pub grid_status: String,
 
     /// Source API endpoint path for traceability

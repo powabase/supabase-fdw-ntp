@@ -150,7 +150,7 @@ impl fmt::Display for ParseError {
             ParseError::InvalidGridStatus(status) => {
                 write!(
                     f,
-                    "Invalid grid status: '{}' (expected GREEN, YELLOW, or RED)",
+                    "Invalid grid status: '{}' (expected GREEN, YELLOW, RED, or variants with _NEG suffix)",
                     status
                 )
             }

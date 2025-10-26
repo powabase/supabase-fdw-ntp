@@ -158,13 +158,19 @@ pub struct TimestampBounds {
 
 /// Build full API URL from components
 ///
+/// Handles different URL formats for different endpoints:
+/// - **Standard endpoints:** `/endpoint/date_from/date_to`
+/// - **Annual endpoint (Jahresmarktpraemie):** `/endpoint/YYYY` (year only)
+/// - **Monthly endpoint (marktpraemie):** `/endpoint/YYYY/MM` (year and month)
+/// - **Product-based endpoints:** `/endpoint/product/date_from/date_to`
+///
 /// # Arguments
 ///
 /// * `base_url` - API base URL (e.g., "https://www.netztransparenz.de/api/ntp")
-/// * `endpoint` - Endpoint name (e.g., "prognose", "Spotmarktpreise")
+/// * `endpoint` - Endpoint name (e.g., "prognose", "Spotmarktpreise", "Jahresmarktpraemie")
 /// * `product` - Optional product name (e.g., "Solar")
-/// * `date_from` - Start date (YYYY-MM-DD)
-/// * `date_to` - End date (YYYY-MM-DD)
+/// * `date_from` - Start date (YYYY-MM-DD format)
+/// * `date_to` - End date (YYYY-MM-DD format)
 ///
 /// # Returns
 ///
@@ -174,17 +180,7 @@ pub struct TimestampBounds {
 ///
 /// ```
 /// # use supabase_fdw_ntp::query_router::build_api_url;
-/// // Renewable energy endpoint (with product)
-/// let url = build_api_url(
-///     "https://www.netztransparenz.de/api/ntp",
-///     "prognose",
-///     Some("Solar"),
-///     "2024-10-24",
-///     "2024-10-25"
-/// );
-/// assert_eq!(url, "https://www.netztransparenz.de/api/ntp/prognose/Solar/2024-10-24/2024-10-25");
-///
-/// // Price endpoint (no product)
+/// // Standard endpoint (date range)
 /// let url = build_api_url(
 ///     "https://www.netztransparenz.de/api/ntp",
 ///     "Spotmarktpreise",
@@ -193,6 +189,36 @@ pub struct TimestampBounds {
 ///     "2024-10-25"
 /// );
 /// assert_eq!(url, "https://www.netztransparenz.de/api/ntp/Spotmarktpreise/2024-10-24/2024-10-25");
+///
+/// // Annual endpoint (year only)
+/// let url = build_api_url(
+///     "https://www.netztransparenz.de/api/ntp",
+///     "Jahresmarktpraemie",
+///     None,
+///     "2024-01-01",
+///     "2025-01-01"
+/// );
+/// assert_eq!(url, "https://www.netztransparenz.de/api/ntp/Jahresmarktpraemie/2024");
+///
+/// // Monthly endpoint (year/month)
+/// let url = build_api_url(
+///     "https://www.netztransparenz.de/api/ntp",
+///     "marktpraemie",
+///     None,
+///     "2024-10-01",
+///     "2024-10-31"
+/// );
+/// assert_eq!(url, "https://www.netztransparenz.de/api/ntp/marktpraemie/2024/10");
+///
+/// // Product-based endpoint (date range with product)
+/// let url = build_api_url(
+///     "https://www.netztransparenz.de/api/ntp",
+///     "prognose",
+///     Some("Solar"),
+///     "2024-10-24",
+///     "2024-10-25"
+/// );
+/// assert_eq!(url, "https://www.netztransparenz.de/api/ntp/prognose/Solar/2024-10-24/2024-10-25");
 /// ```
 pub fn build_api_url(
     base_url: &str,
@@ -204,6 +230,22 @@ pub fn build_api_url(
     // Remove trailing slash from base_url if present
     let base = base_url.trim_end_matches('/');
 
+    // Special handling for Jahresmarktpraemie (year-only endpoint)
+    if endpoint == "Jahresmarktpraemie" {
+        // Extract year from date_from (YYYY-MM-DD -> YYYY)
+        let year = &date_from[0..4];
+        return format!("{}/{}/{}", base, endpoint, year);
+    }
+
+    // Special handling for marktpraemie (year/month endpoint)
+    if endpoint == "marktpraemie" {
+        // Extract year and month from date_from (YYYY-MM-DD -> YYYY and MM)
+        let year = &date_from[0..4];
+        let month = &date_from[5..7];
+        return format!("{}/{}/{}/{}", base, endpoint, year, month);
+    }
+
+    // Standard handling for all other endpoints (date range format)
     if let Some(prod) = product {
         format!("{}/{}/{}/{}/{}", base, endpoint, prod, date_from, date_to)
     } else {
@@ -832,6 +874,54 @@ mod tests {
         assert_eq!(
             url,
             "https://www.netztransparenz.de/api/ntp/prognose/Solar/2024-10-24/2024-10-25"
+        );
+    }
+
+    #[test]
+    fn test_build_api_url_annual_endpoint() {
+        // Jahresmarktpraemie uses year-only format
+        let url = build_api_url(
+            "https://www.netztransparenz.de/api/ntp",
+            "Jahresmarktpraemie",
+            None,
+            "2024-01-01",
+            "2025-01-01",
+        );
+        assert_eq!(
+            url,
+            "https://www.netztransparenz.de/api/ntp/Jahresmarktpraemie/2024"
+        );
+    }
+
+    #[test]
+    fn test_build_api_url_monthly_endpoint() {
+        // marktpraemie uses year/month format
+        let url = build_api_url(
+            "https://www.netztransparenz.de/api/ntp",
+            "marktpraemie",
+            None,
+            "2024-10-01",
+            "2024-10-31",
+        );
+        assert_eq!(
+            url,
+            "https://www.netztransparenz.de/api/ntp/marktpraemie/2024/10"
+        );
+    }
+
+    #[test]
+    fn test_build_api_url_monthly_endpoint_single_digit_month() {
+        // Verify month is extracted with leading zero preserved
+        let url = build_api_url(
+            "https://www.netztransparenz.de/api/ntp",
+            "marktpraemie",
+            None,
+            "2024-09-01",
+            "2024-09-30",
+        );
+        assert_eq!(
+            url,
+            "https://www.netztransparenz.de/api/ntp/marktpraemie/2024/09"
         );
     }
 
