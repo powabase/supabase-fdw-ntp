@@ -33,6 +33,16 @@ jobs:
         with:
           shared-key: "wasm-test"
 
+      - name: Install cargo-component
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-component@0.21.1
+
+      - name: Regenerate bindings
+        run: |
+          cargo component build --target wasm32-unknown-unknown
+          cargo fmt --all
+
       - name: Check formatting
         run: cargo fmt --all -- --check
 
