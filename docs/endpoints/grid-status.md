@@ -547,4 +547,4 @@ FROM hourly;
 
 ---
 
-**Built with NTP API** • **Powered by Supabase WASM FDW v0.2.9**
+**Built with NTP API** • **Powered by Supabase WASM FDW v0.3.0**

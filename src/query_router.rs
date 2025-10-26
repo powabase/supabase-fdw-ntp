@@ -6,7 +6,7 @@
 //!
 //! ## Renewable Energy Table
 //! - `product_type` → API product parameter (Solar, Wind, Windonshore, Windoffshore)
-//! - `data_category` → API endpoint prefix (prognose, hochrechnung, onlinehochrechnung)
+//! - `data_category` → API endpoint prefix (hochrechnung, onlinehochrechnung)
 //! - `timestamp_utc` → ISO 8601 date range (YYYY-MM-DD)
 //!
 //! ## Electricity Market Prices Table
@@ -18,10 +18,10 @@
 //! ```rust
 //! use supabase_fdw_ntp::query_router::*;
 //!
-//! // Route a solar forecast query
+//! // Route a solar extrapolation query
 //! let filters = QualFilters {
 //!     product_type: Some("solar".to_string()),
-//!     data_category: Some("forecast".to_string()),
+//!     data_category: Some("extrapolation".to_string()),
 //!     price_type: None,
 //!     timestamp_range: Some(DateRange {
 //!         start: "2024-10-24".to_string(),
@@ -32,7 +32,7 @@
 //! };
 //!
 //! let plans = route_query(&filters, "https://www.netztransparenz.de/api/ntp").unwrap();
-//! assert_eq!(plans.len(), 1); // Single endpoint: prognose/Solar/2024-10-24/2024-10-25
+//! assert_eq!(plans.len(), 1); // Single endpoint: hochrechnung/Solar/2024-10-24/2024-10-25
 //! ```
 
 use crate::error::{ApiError, NtpFdwError};
@@ -77,9 +77,9 @@ pub struct QualFilters {
     /// From SQL: `WHERE product_type = 'solar'`
     pub product_type: Option<String>,
 
-    /// Data category filter: "forecast", "extrapolation", "online_actual"
+    /// Data category filter: "extrapolation", "online_actual"
     ///
-    /// From SQL: `WHERE data_category = 'forecast'`
+    /// From SQL: `WHERE data_category = 'extrapolation'`
     pub data_category: Option<String>,
 
     /// Price type filter: "spot_market", "market_premium", "annual_market_value", "negative_flag"
@@ -487,7 +487,7 @@ pub fn route_renewable(
     // Determine data categories to query
     let categories = match &filters.data_category {
         Some(category) => vec![category.as_str()],
-        None => vec!["forecast", "extrapolation", "online_actual"],
+        None => vec!["extrapolation", "online_actual"],
     };
 
     let mut plans = Vec::new();
@@ -531,7 +531,7 @@ pub fn route_renewable(
 /// # Arguments
 ///
 /// * `product_type` - Database product type: "solar", "wind_onshore", "wind_offshore"
-/// * `category` - Data category: "forecast", "extrapolation", "online_actual"
+/// * `category` - Data category: "extrapolation", "online_actual"
 ///
 /// # Returns
 ///
@@ -542,10 +542,10 @@ pub fn route_renewable(
 /// ```
 /// # use supabase_fdw_ntp::query_router::map_product_to_api;
 /// // Solar is straightforward
-/// assert_eq!(map_product_to_api("solar", "forecast").unwrap(), vec!["Solar"]);
+/// assert_eq!(map_product_to_api("solar", "extrapolation").unwrap(), vec!["Solar"]);
 ///
 /// // Wind depends on data category
-/// assert_eq!(map_product_to_api("wind_onshore", "forecast").unwrap(), vec!["Wind"]);
+/// assert_eq!(map_product_to_api("wind_onshore", "extrapolation").unwrap(), vec!["Wind"]);
 /// assert_eq!(map_product_to_api("wind_onshore", "online_actual").unwrap(), vec!["Windonshore"]);
 ///
 /// // Wind offshore only has online_actual
@@ -559,19 +559,19 @@ pub fn map_product_to_api(
         // Solar: same for all categories
         ("solar", _) => Ok(vec!["Solar"]),
 
-        // Wind onshore: "Wind" for forecast/extrapolation, "Windonshore" for online_actual
-        ("wind_onshore", "forecast") | ("wind_onshore", "extrapolation") => Ok(vec!["Wind"]),
+        // Wind onshore: "Wind" for extrapolation, "Windonshore" for online_actual
+        ("wind_onshore", "extrapolation") => Ok(vec!["Wind"]),
         ("wind_onshore", "online_actual") => Ok(vec!["Windonshore"]),
 
         // Wind offshore: only online_actual available
         ("wind_offshore", "online_actual") => Ok(vec!["Windoffshore"]),
-        ("wind_offshore", "forecast") | ("wind_offshore", "extrapolation") => {
-            // Wind offshore doesn't have forecast/extrapolation endpoints
+        ("wind_offshore", "extrapolation") => {
+            // Wind offshore doesn't have extrapolation endpoint
             // Return empty list (no endpoints to query)
             Ok(vec![])
         }
 
-        // Unknown product type
+        // Unknown product type or category combination
         _ => Err(NtpFdwError::Generic(format!(
             "Unknown product type: '{}'. Expected 'solar', 'wind_onshore', or 'wind_offshore'.",
             product_type
@@ -583,7 +583,7 @@ pub fn map_product_to_api(
 ///
 /// # Arguments
 ///
-/// * `category` - Data category: "forecast", "extrapolation", "online_actual"
+/// * `category` - Data category: "extrapolation", "online_actual"
 ///
 /// # Returns
 ///
@@ -593,17 +593,15 @@ pub fn map_product_to_api(
 ///
 /// ```
 /// # use supabase_fdw_ntp::query_router::map_category_to_endpoint;
-/// assert_eq!(map_category_to_endpoint("forecast").unwrap(), "prognose");
 /// assert_eq!(map_category_to_endpoint("extrapolation").unwrap(), "hochrechnung");
 /// assert_eq!(map_category_to_endpoint("online_actual").unwrap(), "onlinehochrechnung");
 /// ```
 pub fn map_category_to_endpoint(category: &str) -> Result<&'static str, NtpFdwError> {
     match category {
-        "forecast" => Ok("prognose"),
         "extrapolation" => Ok("hochrechnung"),
         "online_actual" => Ok("onlinehochrechnung"),
         _ => Err(NtpFdwError::Generic(format!(
-            "Unknown data category: '{}'. Expected 'forecast', 'extrapolation', or 'online_actual'.",
+            "Unknown data category: '{}'. Expected 'extrapolation' or 'online_actual'.",
             category
         ))),
     }
@@ -1025,10 +1023,6 @@ mod tests {
     #[test]
     fn test_map_product_solar() {
         assert_eq!(
-            map_product_to_api("solar", "forecast").unwrap(),
-            vec!["Solar"]
-        );
-        assert_eq!(
             map_product_to_api("solar", "extrapolation").unwrap(),
             vec!["Solar"]
         );
@@ -1040,10 +1034,6 @@ mod tests {
 
     #[test]
     fn test_map_product_wind_onshore() {
-        assert_eq!(
-            map_product_to_api("wind_onshore", "forecast").unwrap(),
-            vec!["Wind"]
-        );
         assert_eq!(
             map_product_to_api("wind_onshore", "extrapolation").unwrap(),
             vec!["Wind"]
@@ -1061,11 +1051,7 @@ mod tests {
             map_product_to_api("wind_offshore", "online_actual").unwrap(),
             vec!["Windoffshore"]
         );
-        // Other categories return empty (no endpoints available)
-        assert_eq!(
-            map_product_to_api("wind_offshore", "forecast").unwrap(),
-            Vec::<&str>::new()
-        );
+        // Extrapolation returns empty (no endpoint available)
         assert_eq!(
             map_product_to_api("wind_offshore", "extrapolation").unwrap(),
             Vec::<&str>::new()
@@ -1079,7 +1065,6 @@ mod tests {
 
     #[test]
     fn test_map_category_to_endpoint() {
-        assert_eq!(map_category_to_endpoint("forecast").unwrap(), "prognose");
         assert_eq!(
             map_category_to_endpoint("extrapolation").unwrap(),
             "hochrechnung"
@@ -1125,11 +1110,11 @@ mod tests {
     // ========================================================================
 
     #[test]
-    fn test_route_renewable_solar_forecast() {
+    fn test_route_renewable_solar_extrapolation() {
         // Optimal query: 1 endpoint
         let filters = QualFilters {
             product_type: Some("solar".to_string()),
-            data_category: Some("forecast".to_string()),
+            data_category: Some("extrapolation".to_string()),
             price_type: None,
             timestamp_range: Some(DateRange {
                 start: "2024-10-24".to_string(),
@@ -1142,19 +1127,19 @@ mod tests {
         let plans = route_renewable(&filters, "https://api.example.com").unwrap();
 
         assert_eq!(plans.len(), 1);
-        assert_eq!(plans[0].endpoint, "prognose");
+        assert_eq!(plans[0].endpoint, "hochrechnung");
         assert_eq!(plans[0].product, Some("Solar".to_string()));
         assert_eq!(plans[0].date_from, "2024-10-24");
         assert_eq!(plans[0].date_to, "2024-10-25");
         assert_eq!(
             plans[0].api_url,
-            "https://api.example.com/prognose/Solar/2024-10-24/2024-10-25"
+            "https://api.example.com/hochrechnung/Solar/2024-10-24/2024-10-25"
         );
     }
 
     #[test]
     fn test_route_renewable_solar_all_categories() {
-        // No data_category filter: 3 endpoints
+        // No data_category filter: 2 endpoints
         let filters = QualFilters {
             product_type: Some("solar".to_string()),
             data_category: None,
@@ -1169,15 +1154,14 @@ mod tests {
 
         let plans = route_renewable(&filters, "https://api.example.com").unwrap();
 
-        assert_eq!(plans.len(), 3);
-        assert_eq!(plans[0].endpoint, "prognose");
-        assert_eq!(plans[1].endpoint, "hochrechnung");
-        assert_eq!(plans[2].endpoint, "onlinehochrechnung");
+        assert_eq!(plans.len(), 2);
+        assert_eq!(plans[0].endpoint, "hochrechnung");
+        assert_eq!(plans[1].endpoint, "onlinehochrechnung");
     }
 
     #[test]
     fn test_route_renewable_wind_onshore() {
-        // Wind onshore with all categories: 3 endpoints
+        // Wind onshore with all categories: 2 endpoints
         let filters = QualFilters {
             product_type: Some("wind_onshore".to_string()),
             data_category: None,
@@ -1192,12 +1176,11 @@ mod tests {
 
         let plans = route_renewable(&filters, "https://api.example.com").unwrap();
 
-        assert_eq!(plans.len(), 3);
-        // Forecast and extrapolation use "Wind"
+        assert_eq!(plans.len(), 2);
+        // Extrapolation uses "Wind"
         assert_eq!(plans[0].product, Some("Wind".to_string()));
-        assert_eq!(plans[1].product, Some("Wind".to_string()));
         // Online actual uses "Windonshore"
-        assert_eq!(plans[2].product, Some("Windonshore".to_string()));
+        assert_eq!(plans[1].product, Some("Windonshore".to_string()));
     }
 
     #[test]
@@ -1225,11 +1208,10 @@ mod tests {
 
     #[test]
     fn test_route_renewable_all_products_and_categories() {
-        // No filters: 9 endpoints total
-        // - Solar: prognose, hochrechnung, onlinehochrechnung (3)
-        // - Wind onshore: prognose/Wind, hochrechnung/Wind, onlinehochrechnung/Windonshore (3)
+        // No filters: 5 endpoints total
+        // - Solar: hochrechnung, onlinehochrechnung (2)
+        // - Wind onshore: hochrechnung/Wind, onlinehochrechnung/Windonshore (2)
         // - Wind offshore: onlinehochrechnung/Windoffshore (1)
-        // Actually 7 unique endpoints (wind offshore doesn't have forecast/extrapolation)
         let filters = QualFilters {
             product_type: None,
             data_category: None,
@@ -1244,9 +1226,9 @@ mod tests {
 
         let plans = route_renewable(&filters, "https://api.example.com").unwrap();
 
-        // 3 products × 3 categories = 9 combinations
-        // But wind_offshore doesn't have forecast/extrapolation, so 7 actual endpoints
-        assert_eq!(plans.len(), 7);
+        // 3 products × 2 categories = 6 combinations
+        // But wind_offshore doesn't have extrapolation, so 5 actual endpoints
+        assert_eq!(plans.len(), 5);
     }
 
     #[test]
@@ -1254,7 +1236,7 @@ mod tests {
         // No timestamp_range filter: should default to last 7 days
         let filters = QualFilters {
             product_type: Some("solar".to_string()),
-            data_category: Some("forecast".to_string()),
+            data_category: Some("extrapolation".to_string()),
             price_type: None,
             timestamp_range: None,
             timestamp_bounds: None,
@@ -1273,7 +1255,7 @@ mod tests {
     fn test_route_renewable_invalid_date_range() {
         let filters = QualFilters {
             product_type: Some("solar".to_string()),
-            data_category: Some("forecast".to_string()),
+            data_category: Some("extrapolation".to_string()),
             price_type: None,
             timestamp_range: Some(DateRange {
                 start: "2024-10-25".to_string(),
@@ -1366,7 +1348,7 @@ mod tests {
     fn test_route_query_renewable() {
         let filters = QualFilters {
             product_type: Some("solar".to_string()),
-            data_category: Some("forecast".to_string()),
+            data_category: Some("extrapolation".to_string()),
             price_type: None,
             timestamp_range: Some(DateRange {
                 start: "2024-10-24".to_string(),
@@ -1379,7 +1361,7 @@ mod tests {
         let plans = route_query(&filters, "https://api.example.com").unwrap();
 
         assert_eq!(plans.len(), 1);
-        assert_eq!(plans[0].endpoint, "prognose");
+        assert_eq!(plans[0].endpoint, "hochrechnung");
     }
 
     #[test]

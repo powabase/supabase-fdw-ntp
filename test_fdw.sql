@@ -42,7 +42,7 @@ CREATE SCHEMA IF NOT EXISTS ntp;
 -- TABLE 1: renewable_energy_timeseries
 -- ============================================
 -- Purpose: Consolidated renewable energy production data
--- Endpoints: 9 (prognose, hochrechnung, onlinehochrechnung × 3 products)
+-- Endpoints: 6 (hochrechnung, onlinehochrechnung × 3 products, minus 3 unavailable wind_offshore)
 -- Granularity: 15-minute or 60-minute intervals
 -- ============================================
 
@@ -56,7 +56,7 @@ CREATE FOREIGN TABLE IF NOT EXISTS ntp.renewable_energy_timeseries (
   product_type TEXT NOT NULL
     CHECK (product_type IN ('solar', 'wind_onshore', 'wind_offshore')),
   data_category TEXT NOT NULL
-    CHECK (data_category IN ('forecast', 'extrapolation', 'online_actual')),
+    CHECK (data_category IN ('extrapolation', 'online_actual')),
 
   -- TSO ZONE BREAKDOWN (German Transmission System Operators)
   tso_50hertz_mw NUMERIC(10,3),      -- Eastern Germany
@@ -220,26 +220,7 @@ COMMENT ON FOREIGN TABLE ntp.grid_status_timeseries IS
 -- ============================================
 
 \echo ''
-\echo '=== Test 1: Basic Solar Forecast Query ==='
--- Expected: 96 rows (4 per hour x 24 hours for 15-minute intervals)
--- Expected: All TSO zones populated, reasonable MW values
-SELECT
-  timestamp_utc,
-  total_germany_mw,
-  tso_50hertz_mw,
-  tso_amprion_mw,
-  interval_minutes
-FROM ntp.renewable_energy_timeseries
-WHERE product_type = 'solar'
-  AND data_category = 'forecast'
-  AND timestamp_utc >= CURRENT_DATE
-  AND timestamp_utc < CURRENT_DATE + INTERVAL '1 day'
-ORDER BY timestamp_utc
-LIMIT 10;
--- Expected: 10 rows, 15-minute intervals, solar production values 0-5000 MW
-
-\echo ''
-\echo '=== Test 2: Wind Onshore Extrapolation (Hourly) ==='
+\echo '=== Test 1: Wind Onshore Extrapolation (Hourly) ==='
 -- Expected: 24 rows (hourly data for online_actual)
 -- Expected: Higher MW values than solar (typical wind production)
 SELECT
@@ -257,7 +238,7 @@ LIMIT 10;
 -- Expected: 10 rows, 60-minute intervals, wind production 1000-15000 MW
 
 \echo ''
-\echo '=== Test 3: Multi-Product Comparison ==='
+\echo '=== Test 2: Multi-Product Comparison ==='
 -- Expected: 2-3 rows (solar, wind_onshore, wind_offshore if available)
 -- Expected: Wind onshore > Solar in most cases
 SELECT
@@ -275,7 +256,7 @@ ORDER BY avg_production_mw DESC;
 -- Expected: Wind onshore typically highest avg, solar shows day/night variation
 
 \echo ''
-\echo '=== Test 4: TSO Zone Distribution Analysis ==='
+\echo '=== Test 3: TSO Zone Distribution Analysis ==='
 -- Expected: 4 rows (one per TSO zone)
 -- Expected: TenneT typically highest (Northern Germany, good wind resources)
 SELECT
@@ -333,7 +314,7 @@ ORDER BY tso_zone;
 -- ============================================
 
 \echo ''
-\echo '=== Test 5: Spot Market Prices (Last 24 Hours) ==='
+\echo '=== Test 4: Spot Market Prices (Last 24 Hours) ==='
 -- Expected: 24 rows (hourly prices)
 -- Expected: Price range typically -5 to 250 EUR/MWh
 SELECT
@@ -351,7 +332,7 @@ LIMIT 10;
 -- Expected: 10 rows, hourly prices, some may be negative during high renewable periods
 
 \echo ''
-\echo '=== Test 6: Negative Price Detection ==='
+\echo '=== Test 5: Negative Price Detection ==='
 -- Expected: 0-10 rows (negative prices during renewable overproduction)
 -- Expected: Primarily during midday (solar peak) or high wind periods
 SELECT
@@ -372,7 +353,7 @@ LIMIT 10;
 -- Expected: Negative prices correlate with high renewable production periods
 
 \echo ''
-\echo '=== Test 7: Price Statistics Summary ==='
+\echo '=== Test 6: Price Statistics Summary ==='
 -- Expected: 1 row with aggregated statistics
 -- Expected: Some negative hours (4-10%), average price 50-150 EUR/MWh
 SELECT
@@ -394,7 +375,7 @@ WHERE price_type = 'spot_market'
 -- ============================================
 
 \echo ''
-\echo '=== Test 8: Recent Redispatch Events ==='
+\echo '=== Test 7: Recent Redispatch Events ==='
 -- Expected: Variable row count (depends on grid congestion)
 -- Expected: TSO zones and power adjustments
 SELECT
@@ -410,7 +391,7 @@ LIMIT 10;
 -- Expected: Redispatch events show grid management actions
 
 \echo ''
-\echo '=== Test 9: Redispatch Summary by TSO ==='
+\echo '=== Test 8: Redispatch Summary by TSO ==='
 -- Expected: 1-4 rows (one per affected TSO zone)
 -- Expected: Aggregated power adjustments
 SELECT
@@ -429,7 +410,7 @@ ORDER BY event_count DESC;
 -- ============================================
 
 \echo ''
-\echo '=== Test 10: Current Grid Status (TrafficLight) ==='
+\echo '=== Test 9: Current Grid Status (TrafficLight) ==='
 -- Expected: Recent grid status entries
 -- Expected: Status values: GREEN/YELLOW/RED
 SELECT
@@ -443,7 +424,7 @@ LIMIT 10;
 -- Expected: Real-time grid stability indicators
 
 \echo ''
-\echo '=== Test 11: Grid Status Distribution ==='
+\echo '=== Test 10: Grid Status Distribution ==='
 -- Expected: 3 rows showing status counts
 -- Expected: Mostly GREEN under normal conditions
 SELECT
@@ -461,7 +442,7 @@ ORDER BY grid_status;
 -- ============================================
 
 \echo ''
-\echo '=== Test 12: Daily Price vs Solar Production Correlation ==='
+\echo '=== Test 11: Daily Price vs Solar Production Correlation ==='
 -- Expected: 7 rows (one per day)
 -- Expected: Inverse correlation (high solar = lower/negative prices)
 SELECT
@@ -483,30 +464,7 @@ ORDER BY date;
 -- Expected: Days with high solar production show lower average prices
 
 \echo ''
-\echo '=== Test 13: Forecast vs Actual Accuracy ==='
--- Expected: 1 row per day showing forecast error
--- Expected: Forecast error typically within +/- 10-20%
-SELECT
-  DATE(r1.timestamp_utc) as date,
-  ROUND(AVG(r1.total_germany_mw)::numeric, 2) as avg_forecast_mw,
-  ROUND(AVG(r2.total_germany_mw)::numeric, 2) as avg_actual_mw,
-  ROUND(((AVG(r2.total_germany_mw) - AVG(r1.total_germany_mw)) /
-         NULLIF(AVG(r1.total_germany_mw), 0) * 100)::numeric, 2) as forecast_error_pct
-FROM ntp.renewable_energy_timeseries r1
-JOIN ntp.renewable_energy_timeseries r2
-  ON DATE_TRUNC('hour', r1.timestamp_utc) = DATE_TRUNC('hour', r2.timestamp_utc)
-WHERE r1.product_type = 'solar'
-  AND r1.data_category = 'forecast'
-  AND r2.product_type = 'solar'
-  AND r2.data_category = 'extrapolation'
-  AND r1.timestamp_utc >= CURRENT_DATE - INTERVAL '7 days'
-  AND r1.timestamp_utc < CURRENT_DATE
-GROUP BY DATE(r1.timestamp_utc)
-ORDER BY date;
--- Expected: Forecast accuracy metrics, small error percentage indicates good predictions
-
-\echo ''
-\echo '=== Test 14: Peak Production Hours Analysis ==='
+\echo '=== Test 12: Peak Production Hours Analysis ==='
 -- Expected: 24 rows (one per hour of day)
 -- Expected: Solar peaks around 11:00-13:00, wind more distributed
 SELECT

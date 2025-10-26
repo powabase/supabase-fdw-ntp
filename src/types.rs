@@ -33,7 +33,6 @@ pub struct RenewableRow {
     pub product_type: String,
 
     /// Data category (mapped from endpoint)
-    /// - "forecast" (from prognose)
     /// - "extrapolation" (from hochrechnung)
     /// - "online_actual" (from onlinehochrechnung)
     pub data_category: String,
@@ -52,7 +51,7 @@ pub struct RenewableRow {
     pub tso_transnetbw_mw: Option<f64>,
 
     /// Source API endpoint path for traceability
-    /// Example: "prognose/Solar/2024-10-24/2024-10-25"
+    /// Example: "hochrechnung/Solar/2024-10-24/2024-10-25"
     pub source_endpoint: String,
 }
 
@@ -158,8 +157,8 @@ impl RenewableRow {
     /// #     interval_end_utc: "2024-10-24T06:15:00Z".to_string(),
     /// #     interval_minutes: 15,
     /// #     product_type: "solar".to_string(),
-    /// #     data_category: "forecast".to_string(),
-    /// #     source_endpoint: "prognose/Solar/2024-10-24/2024-10-25".to_string(),
+    /// #     data_category: "extrapolation".to_string(),
+    /// #     source_endpoint: "hochrechnung/Solar/2024-10-24/2024-10-25".to_string(),
     /// };
     ///
     /// assert_eq!(row.total_germany_mw(), 600.0); // 100 + 0 + 300 + 200
@@ -197,8 +196,8 @@ impl RenewableRow {
     /// #     interval_end_utc: "2024-10-24T06:15:00Z".to_string(),
     /// #     interval_minutes: 15,
     /// #     product_type: "solar".to_string(),
-    /// #     data_category: "forecast".to_string(),
-    /// #     source_endpoint: "prognose/Solar/2024-10-24/2024-10-25".to_string(),
+    /// #     data_category: "extrapolation".to_string(),
+    /// #     source_endpoint: "hochrechnung/Solar/2024-10-24/2024-10-25".to_string(),
     /// };
     ///
     /// assert!(!complete_row.has_missing_data()); // All zones have data

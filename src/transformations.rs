@@ -477,7 +477,6 @@ pub fn normalize_product_type(api_product: &str) -> Result<String, ParseError> {
 ///
 /// # Mappings
 ///
-/// - `"prognose"` → `"forecast"`
 /// - `"hochrechnung"` → `"extrapolation"`
 /// - `"onlinehochrechnung"` → `"online_actual"`
 ///
@@ -485,7 +484,6 @@ pub fn normalize_product_type(api_product: &str) -> Result<String, ParseError> {
 ///
 /// ```
 /// # use supabase_fdw_ntp::transformations::extract_data_category;
-/// assert_eq!(extract_data_category("prognose/Solar").unwrap(), "forecast");
 /// assert_eq!(extract_data_category("hochrechnung/Wind").unwrap(), "extrapolation");
 /// assert_eq!(extract_data_category("onlinehochrechnung/Solar").unwrap(), "online_actual");
 /// assert!(extract_data_category("unknown/endpoint").is_err());
@@ -499,8 +497,6 @@ pub fn extract_data_category(endpoint: &str) -> Result<String, ParseError> {
         Ok("online_actual".to_string())
     } else if lower.contains("hochrechnung") {
         Ok("extrapolation".to_string())
-    } else if lower.contains("prognose") {
-        Ok("forecast".to_string())
     } else {
         Err(ParseError::UnknownDataCategory(endpoint.to_string()))
     }
@@ -1047,11 +1043,6 @@ mod tests {
     // ========================================================================
     // Tests for extract_data_category (4 tests)
     // ========================================================================
-
-    #[test]
-    fn test_data_category_forecast() {
-        assert_eq!(extract_data_category("prognose/Solar").unwrap(), "forecast");
-    }
 
     #[test]
     fn test_data_category_extrapolation() {

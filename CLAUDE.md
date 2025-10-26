@@ -10,25 +10,24 @@ This wrapper follows the WASM FDW architecture required for hosted Supabase inst
 
 ## Project Status
 
-**✅ v0.2.10 - Production Ready (100% Accessible Endpoints)**
+**✅ v0.3.0 - Production Ready (100% Accessible Endpoints)**
 
-- **Current Version:** v0.2.10
-- **Status:** Production-ready, 13/13 accessible endpoints working (100% coverage) 🎉
+- **Current Version:** v0.3.0
+- **Status:** Production-ready, 11/11 accessible endpoints working (100% coverage) 🎉
 - **Tables:** 4 (renewable energy, electricity prices, redispatch events, grid status) - ALL WORKING ✅
-- **API Endpoints:** 13/13 accessible endpoints functional (100% completion) ✅
-- **Note:** NTP API provides 13 accessible endpoints (2 wind_offshore variants unavailable per API design)
-- **WASM Binary:** ~326 KB, validated, zero WASI CLI imports ✅
-- **Tests:** 198 unit tests passing ✅
+- **API Endpoints:** 11/11 accessible endpoints functional (100% completion) ✅
+- **Breaking Change:** REMOVED forecast data_category (prognose endpoint) - now returns ERROR instead of 0 rows ⚠️
+- **Note:** NTP API provides 11 accessible endpoints (wind_offshore limited to online_actual, forecast removed entirely)
+- **WASM Binary:** ~327 KB, validated, zero WASI CLI imports ✅
+- **Tests:** 190 unit tests passing ✅
 - **Query Performance:** Single endpoint ~200-500ms, 3 parallel ~600-1500ms ✅
-- **New in v0.2.10:** Fixed TrafficLight endpoint datetime format (requires `T00:00:00` suffix per API spec) and timezone-less timestamp parsing ✅
-- **New in v0.2.9:** Fixed NegativePreise UNPIVOT bug (4 rows per timestamp), updated documentation to reflect 13 accessible endpoints ✅
-- **New in v0.2.8:** Marktpraemie monthly premium parser with UNPIVOT logic (100% endpoint coverage achieved) ✅
-- **New in v0.2.7:** Jahresmarktpraemie pipe-delimited parser (annual market value 2020-2024 accessible) ✅
-- **Fixed in v0.2.6:** 2 production bug fixes (YELLOW_NEG grid status variants, Jahresmarktpraemie URL construction) ✅
-- **Fixed in v0.2.5:** 5 critical bug fixes (redispatch aggregation, GENERATED columns, midnight crossing, NegativePreise parser, table detection) ✅
-- **Fixed in v0.2.4:** Cross-day time range auto-adjustment (complete time filtering) ✅
-- **Fixed in v0.2.3:** Same-date query auto-adjustment (exclusive end date fix) ✅
-- **Fixed in v0.2.2:** String timestamp parsing (time-based filtering fully functional) ✅
+- **New in v0.3.0:** Removed forecast endpoint (extrapolation + online_actual only, 11 accessible endpoints) ✅
+- **Fixed in v0.2.10:** TrafficLight endpoint datetime format and timezone-less timestamp parsing ✅
+- **Fixed in v0.2.9:** NegativePreise UNPIVOT bug (4 rows per timestamp) ✅
+- **Fixed in v0.2.8:** Marktpraemie monthly premium parser with UNPIVOT logic ✅
+- **Fixed in v0.2.7:** Jahresmarktpraemie pipe-delimited parser (2020-2024 data accessible) ✅
+- **Fixed in v0.2.6:** YELLOW_NEG grid status and Jahresmarktpraemie URL construction ✅
+- **Fixed in v0.2.5:** 5 critical bugs (table detection, GENERATED columns, midnight crossing, NegativePreise, redispatch) ✅
 
 ## Technology Stack
 
@@ -44,30 +43,34 @@ This wrapper follows the WASM FDW architecture required for hosted Supabase inst
 
 | Table | Purpose | API Coverage | Data Type |
 |-------|---------|--------------|-----------|
-| **renewable_energy_timeseries** | Solar and wind generation | 7 endpoints | CSV |
+| **renewable_energy_timeseries** | Solar and wind generation | 5 endpoints | CSV |
 | **electricity_market_prices** | Spot market, premiums, flags | 4 endpoints | CSV |
 | **redispatch_events** | Grid intervention events | 1 endpoint | CSV |
 | **grid_status_timeseries** | Minute-by-minute grid monitoring | 1 endpoint | JSON |
 
 ### API Endpoint Limitations
 
-The NTP API does not provide all product × category combinations. Specifically:
+The NTP API does not provide all product × category combinations. **v0.3.0 Breaking Change: Forecast endpoint removed.**
 
-**Available Endpoints (13 total):**
-- **Renewable Energy (7):** All combinations EXCEPT wind_offshore forecast/extrapolation
-  - ✅ Solar: forecast, extrapolation, online_actual
-  - ✅ Wind Onshore: forecast, extrapolation, online_actual
-  - ✅ Wind Offshore: online_actual only
+**Available Endpoints (11 total):**
+- **Renewable Energy (5):** Only extrapolation and online_actual supported
+  - ✅ Solar: extrapolation, online_actual (2)
+  - ✅ Wind Onshore: extrapolation, online_actual (2)
+  - ✅ Wind Offshore: online_actual only (1)
+  - ❌ ALL Forecast endpoints removed in v0.3.0
 - **Electricity Prices (4):** Spotmarktpreise, marktpraemie, Jahresmarktpraemie, NegativePreise
 - **Grid Operations (2):** redispatch, TrafficLight
 
-**Unavailable Combinations (per API design):**
-- ❌ `wind_offshore` + `forecast` (prognose/Windoffshore) - Not supported by NTP API
+**Unavailable/Removed Combinations:**
+- ❌ ALL `forecast` (prognose/*) endpoints - **REMOVED in v0.3.0** - Now returns ERROR
 - ❌ `wind_offshore` + `extrapolation` (hochrechnung/Windoffshore) - Not supported by NTP API
 
-**Rationale:** The NTP API only provides online actual data for offshore wind farms. Forecast and extrapolation data are not published, likely due to technical complexity of marine weather forecasting or regulatory restrictions.
+**Rationale:**
+- Forecast endpoints removed due to unreliable API data quality
+- Wind offshore extrapolation not published by NTP API (marine forecasting complexity/regulatory restrictions)
+- Only historical actuals (extrapolation) and real-time (online_actual) data remain
 
-**Implementation:** The wrapper handles these missing endpoints gracefully - queries return 0 rows without errors.
+**Implementation:** Queries with `data_category = 'forecast'` now return an ERROR (breaking change from v0.2.x behavior of returning 0 rows).
 
 ## Quick Reference
 
@@ -83,7 +86,7 @@ cargo component build --release --target wasm32-unknown-unknown
 
 # Verify output
 ls -lh target/wasm32-unknown-unknown/release/supabase_fdw_ntp.wasm
-# Expected: ~301 KB (v0.2.0 with 4 tables, 13 accessible endpoints)
+# Expected: ~327 KB (v0.3.0 with 4 tables, 11 accessible endpoints)
 ```
 
 ### Validation Commands
@@ -107,7 +110,7 @@ shasum -a 256 target/wasm32-unknown-unknown/release/supabase_fdw_ntp.wasm
 **Decision:** Consolidate 9 renewable energy endpoints into 1 table, 4 price endpoints into 1 table, while keeping 2 grid operation endpoints as separate tables.
 
 **Implementation:**
-- `renewable_energy_timeseries`: Includes `product_type` (solar, wind_onshore, wind_offshore) and `data_category` (forecast, extrapolation, online_actual) columns
+- `renewable_energy_timeseries`: Includes `product_type` (solar, wind_onshore, wind_offshore) and `data_category` (extrapolation, online_actual) columns
 - `electricity_market_prices`: Includes `price_type` column (spot_market, market_premium, annual_market_value, negative_flag)
 - `redispatch_events` and `grid_status_timeseries`: Standalone tables (different schemas, different query patterns)
 
@@ -248,7 +251,7 @@ fn matches_timestamp_bounds(timestamp_str: &str, bounds: &TimestampBounds) -> bo
 ## Production Metrics
 
 **WASM Binary:**
-- Size: 301 KB (under 320 KB warning threshold ✅)
+- Size: 327 KB (optimized for production ✅)
 - Checksum: See [GitHub Releases](https://github.com/powabase/supabase-fdw-ntp/releases/latest)
 - Validation: Zero WASI CLI imports ✅
 - Host version: ^0.1.0 (critical requirement)
@@ -260,14 +263,12 @@ fn matches_timestamp_bounds(timestamp_str: &str, bounds: &TimestampBounds) -> bo
 - OAuth2 caching: 1-hour token lifetime
 
 **Data Quality:**
-- 164 unit tests passing (100%) - Updated v0.2.4
-- All 6 security fixes validated
+- 190 unit tests passing (100%) ✅
+- All security fixes validated
 - German locale parsing working (CSV)
 - NULL handling robust (N.A./N.E. variants)
 - JOIN support validated
-- Cross-day time range queries working (v0.2.4 - FIXED)
-- Same-date query auto-adjustment working (v0.2.3 - FIXED)
-- Time-based timestamp filtering working (v0.2.2 - FIXED)
+- Time-based filtering fully functional
 
 ## Known Limitations & Edge Cases
 
@@ -298,7 +299,7 @@ fn matches_timestamp_bounds(timestamp_str: &str, bounds: &TimestampBounds) -> bo
 
 **Not Yet Implemented:**
 - ⚠️ `import_foreign_schema()` - Returns empty vec (manual table creation required)
-- ⚠️ Binary size optimization - Deferred to v0.3.0+ (current: 301 KB, target: <150 KB)
+- ⚠️ Binary size optimization - Deferred to future versions (current: 327 KB, target: <200 KB)
 - ⚠️ Rate limit handling - No retry logic for 429 errors
 - ⚠️ Response caching - All queries hit API
 
@@ -326,8 +327,8 @@ fn matches_timestamp_bounds(timestamp_str: &str, bounds: &TimestampBounds) -> bo
 ## Version Coordination
 
 **Important:** Keep versions synchronized across:
-- `Cargo.toml` - version = "0.2.10"
-- `wit/world.wit` - package powabase:supabase-fdw-ntp@0.2.10
+- `Cargo.toml` - version = "0.3.0"
+- `wit/world.wit` - package powabase:supabase-fdw-ntp@0.3.0
 - `CLAUDE.md` - Current Version section (this file)
 
 All three must match for successful builds and releases.
@@ -340,6 +341,6 @@ All three must match for successful builds and releases.
 
 ---
 
-**Version:** v0.2.10
+**Version:** v0.3.0
 **Last Updated:** 2025-10-26
-**Status:** Production Ready - 100% Accessible Endpoint Coverage (13/13)
+**Status:** Production Ready - 100% Accessible Endpoint Coverage (11/11)

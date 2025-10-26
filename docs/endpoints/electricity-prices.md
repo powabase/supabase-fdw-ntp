@@ -13,7 +13,7 @@ The `electricity_market_prices` endpoint consolidates all electricity pricing da
 - Long-term renewable energy project valuation (annual market values)
 
 **Data Characteristics:**
-- 24 rows per day (hourly spot prices), 96 rows per day (negative flags: 24h × 4 logic types, v0.2.9+), 1 row per month (premiums), 1 row per year (annual values)
+- 24 rows per day (hourly spot prices), 96 rows per day (negative flags: 24h × 4 logic types, v0.3.0+), 1 row per month (premiums), 1 row per year (annual values)
 - Real-time and historical pricing data
 - Geographic scope: Germany (national electricity market)
 - Query time: ~200ms - 2 seconds (depending on granularity and date range)
@@ -67,8 +67,8 @@ None - all parameters are optional. If no filters are provided, defaults to last
 | Column | SQL Type | Description | Units | Example | Notes |
 |--------|----------|-------------|-------|---------|-------|
 | `product_category` | TEXT | Product category for market premiums/annual values | categorical | `wind_onshore` | Values: `'epex'` (MW-EPEX), `'wind_onshore'`, `'wind_offshore'`, `'solar'`, `'annual'`. NULL for spot_market. Indicates renewable type for premium pricing. |
-| `negative_logic_hours` | TEXT | Duration threshold for negative price detection (UNPIVOT: 4 rows per timestamp) | categorical | `3h` | CHECK constraint: (`'1h'`, `'3h'`, `'4h'`, `'6h'`). Each timestamp returns 4 rows (v0.2.9+), one for each threshold. '1h'=at least 1 hour negative, '3h'=3+ consecutive hours. NULL for non-negative-flag records. |
-| `negative_flag_value` | BOOLEAN | TRUE if negative price condition met for specific logic_hours threshold | boolean | `true` | NULL for non-negative-flag records. Combined with negative_logic_hours to identify threshold-specific negative price periods (v0.2.9+ returns all thresholds). |
+| `negative_logic_hours` | TEXT | Duration threshold for negative price detection (UNPIVOT: 4 rows per timestamp) | categorical | `3h` | CHECK constraint: (`'1h'`, `'3h'`, `'4h'`, `'6h'`). Each timestamp returns 4 rows (v0.3.0+), one for each threshold. '1h'=at least 1 hour negative, '3h'=3+ consecutive hours. NULL for non-negative-flag records. |
+| `negative_flag_value` | BOOLEAN | TRUE if negative price condition met for specific logic_hours threshold | boolean | `true` | NULL for non-negative-flag records. Combined with negative_logic_hours to identify threshold-specific negative price periods (v0.3.0+ returns all thresholds). |
 
 ### Metadata Columns
 
@@ -526,20 +526,20 @@ WHERE product_category IN ('wind_onshore', 'solar', 'wind_offshore')
 
 ## Known Limitations
 
-### Negative Price Logic Types (FIXED in v0.2.9) ✅
+### Negative Price Logic Types (FIXED in v0.3.0) ✅
 
 **Previous Issue (v0.2.8):**
 - `negative_logic_hours` returned only `'6h'` values
 - Logic types `'1h'`, `'3h'`, `'4h'` were not accessible
 - Users could not query specific negative price duration thresholds
 
-**Fixed in v0.2.9:**
+**Fixed in v0.3.0:**
 - ✅ Full UNPIVOT implementation now provides all 4 logic types per timestamp
 - ✅ Each timestamp returns 4 rows (one for each duration threshold: 1h, 3h, 4h, 6h)
 - ✅ Users can filter by specific `negative_logic_hours` values
 - ✅ All flag values (true/false) are preserved for each logic type
 
-**New Query Capability (v0.2.9+):**
+**New Query Capability (v0.3.0+):**
 ```sql
 -- Query specific negative price logic threshold
 SELECT timestamp_utc, negative_logic_hours, negative_flag_value
@@ -571,4 +571,4 @@ WHERE price_type = 'negative_flag'
 
 ---
 
-**Built with NTP API** • **Powered by Supabase WASM FDW v0.2.9**
+**Built with NTP API** • **Powered by Supabase WASM FDW v0.3.0**

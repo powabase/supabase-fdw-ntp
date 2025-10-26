@@ -23,25 +23,25 @@ A standalone WASM FDW that can be used with any Supabase project to access offic
 
 ## Features
 
-- ✅ **15 API Endpoints** - Complete German energy market coverage across 4 tables
+- ✅ **11 Accessible Endpoints** - 100% coverage of available German NTP API endpoints across 4 tables
 - ✅ **OAuth2 Authentication** - Secure access with 1-hour token caching using client credentials flow
 - ✅ **CSV & JSON Parsing** - German locale support (comma decimals, DD.MM.YYYY dates, "N.A." and "N.E." NULL indicators)
-- ✅ **Consolidated Tables** - Domain-driven design (4 tables covering 15 endpoints, not 1:1 API mapping)
+- ✅ **Consolidated Tables** - Domain-driven design (4 tables covering 11 endpoints, not 1:1 API mapping)
 - ✅ **JOIN Support** - Full cross-table JOIN capability via re_scan() implementation
 - ✅ **Performance** - Sub-linear scaling: 2.1s for 365-day queries, 630ms for 7-day queries
-- ✅ **301 KB Optimized Binary** - Fast download and secure WASM sandboxed execution
+- ✅ **327 KB Optimized Binary** - Fast download and secure WASM sandboxed execution
 - ✅ **WHERE Clause Pushdown** - Efficient API parameter translation (product_type, data_category, timestamp_utc)
 - ✅ **WASM-Based** - Works on hosted Supabase (no native PostgreSQL extensions needed)
-- ✅ **Production Ready** - 155 tests passing (100%), validated with 62,500+ real API rows
+- ✅ **Production Ready** - 190 tests passing (100%), validated with real API data
 
 ## Available Tables
 
 | Table | Purpose | Coverage |
 |-------|---------|----------|
-| **renewable_energy_timeseries** | Solar, wind onshore, wind offshore production (forecasts, actuals, real-time) | 9 endpoints |
+| **renewable_energy_timeseries** | Solar, wind onshore, wind offshore production (actuals, real-time) | 5 endpoints |
 | **electricity_market_prices** | Spot market prices, market premiums, annual values, negative price flags | 4 endpoints |
-| **redispatch_timeseries** | Grid redispatch measures for congestion management | 1 endpoint |
-| **grid_status** | Real-time grid traffic light status (green/yellow/red) | 1 endpoint |
+| **redispatch_events** | Grid redispatch measures for congestion management | 1 endpoint |
+| **grid_status_timeseries** | Real-time grid traffic light status (green/yellow/red) | 1 endpoint |
 
 ## Quick Start
 
@@ -74,7 +74,7 @@ cargo install cargo-component --locked --version 0.21.1
 git clone https://github.com/powabase/supabase-fdw-ntp.git
 cd supabase-fdw-ntp
 cargo component build --release --target wasm32-unknown-unknown
-# Output: target/wasm32-unknown-unknown/release/supabase_fdw_ntp.wasm (301 KB)
+# Output: target/wasm32-unknown-unknown/release/supabase_fdw_ntp.wasm (327 KB)
 ```
 
 **Validate:**
@@ -460,22 +460,21 @@ WHERE timestamp_utc >= '2024-10-20'
 
 **Critical:** Use 2024 dates for testing (2025 data not yet published by API):
 ```sql
--- Historical data
+-- Historical actuals (extrapolation)
 WHERE data_category = 'extrapolation'
   AND timestamp_utc >= '2024-10-01'
   AND timestamp_utc < '2024-10-31'
 
--- Future forecasts
-WHERE data_category = 'forecast'
-  AND timestamp_utc >= CURRENT_DATE
+-- Real-time data (online_actual)
+WHERE data_category = 'online_actual'
+  AND timestamp_utc >= NOW() - INTERVAL '24 hours'
 ```
 
 **Test Coverage:**
-- 155 tests passing (100% success rate)
-- Unit tests: 119/119 passing
-- Integration tests: 36/36 passing
-- Validated with 62,500+ real API rows
-- 6 critical security fixes applied and validated
+- 190 tests passing (100% success rate)
+- Validated with real NTP API data
+- All security fixes applied and validated
+- Comprehensive E2E test suite (35 tests)
 
 **Local Testing:**
 See [E2E_TESTING_GUIDE.md](docs/E2E_TESTING_GUIDE.md) for complete local testing setup with Supabase CLI.
@@ -505,7 +504,7 @@ Apache-2.0
 
 ---
 
-**Version**: v0.2.0
-**Last Updated**: 2025-10-25
-**Status**: Production Ready (155 tests passing, 100% confidence)
+**Version**: v0.3.0
+**Last Updated**: 2025-10-26
+**Status**: Production Ready (190 tests passing, 11/11 accessible endpoints)
 **Built with Rust, WebAssembly, and Supabase** • **Powered by German NTP Transparency API**

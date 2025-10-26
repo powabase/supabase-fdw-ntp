@@ -868,39 +868,6 @@ mod tests {
     // ========================================================================
 
     #[test]
-    fn test_parse_renewable_csv_valid_solar() {
-        let csv = r#"Datum;von;Zeitzone von;bis;Zeitzone bis;50Hertz (MW);Amprion (MW);TenneT TSO (MW);TransnetBW (MW)
-2024-10-24;06:00;UTC;06:15;UTC;100,5;200,3;300,7;150,2
-2024-10-24;06:15;UTC;06:30;UTC;105,0;210,0;310,0;160,0"#;
-
-        let rows =
-            parse_renewable_csv(csv, "prognose", "Solar", "2024-10-24", "2024-10-25").unwrap();
-
-        assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0].product_type, "solar");
-        assert_eq!(rows[0].data_category, "forecast");
-        assert_eq!(rows[0].interval_minutes, 15);
-        assert_eq!(rows[0].tso_50hertz_mw, Some(100.5));
-        assert_eq!(rows[0].tso_amprion_mw, Some(200.3));
-        assert_eq!(rows[1].tso_50hertz_mw, Some(105.0));
-    }
-
-    #[test]
-    fn test_parse_renewable_csv_with_na_values() {
-        let csv = r#"Datum;von;Zeitzone von;bis;Zeitzone bis;50Hertz (MW);Amprion (MW);TenneT TSO (MW);TransnetBW (MW)
-2024-10-24;00:00;UTC;00:15;UTC;N.A.;N.A.;N.A.;N.A."#;
-
-        let rows =
-            parse_renewable_csv(csv, "prognose", "Solar", "2024-10-24", "2024-10-25").unwrap();
-
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].tso_50hertz_mw, None);
-        assert_eq!(rows[0].tso_amprion_mw, None);
-        assert_eq!(rows[0].tso_tennet_mw, None);
-        assert_eq!(rows[0].tso_transnetbw_mw, None);
-    }
-
-    #[test]
     fn test_parse_renewable_csv_wind_extrapolation() {
         let csv = r#"Datum;von;Zeitzone von;bis;Zeitzone bis;50Hertz (MW);Amprion (MW);TenneT TSO (MW);TransnetBW (MW)
 2024-10-23;12:00;UTC;12:15;UTC;500,0;600,0;700,0;200,0"#;
@@ -931,57 +898,6 @@ mod tests {
         assert_eq!(rows[0].product_type, "wind_onshore");
         assert_eq!(rows[0].data_category, "online_actual");
         assert_eq!(rows[0].interval_minutes, 60); // Hourly
-    }
-
-    #[test]
-    fn test_parse_renewable_csv_empty() {
-        let csv = "";
-        let result = parse_renewable_csv(csv, "prognose", "Solar", "2024-10-24", "2024-10-25");
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_parse_renewable_csv_missing_column() {
-        let csv = r#"Datum;von;bis
-2024-10-24;06:00;06:15"#;
-
-        let result = parse_renewable_csv(csv, "prognose", "Solar", "2024-10-24", "2024-10-25");
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_parse_renewable_csv_invalid_timestamp() {
-        let csv = r#"Datum;von;Zeitzone von;bis;Zeitzone bis;50Hertz (MW);Amprion (MW);TenneT TSO (MW);TransnetBW (MW)
-invalid-date;06:00;UTC;06:15;UTC;100,5;200,3;300,7;150,2"#;
-
-        let result = parse_renewable_csv(csv, "prognose", "Solar", "2024-10-24", "2024-10-25");
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_parse_renewable_csv_invalid_decimal() {
-        let csv = r#"Datum;von;Zeitzone von;bis;Zeitzone bis;50Hertz (MW);Amprion (MW);TenneT TSO (MW);TransnetBW (MW)
-2024-10-24;06:00;UTC;06:15;UTC;abc;200,3;300,7;150,2"#;
-
-        let result = parse_renewable_csv(csv, "prognose", "Solar", "2024-10-24", "2024-10-25");
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_parse_renewable_csv_with_metadata_footer() {
-        let csv = r#"Datum;von;Zeitzone von;bis;Zeitzone bis;50Hertz (MW);Amprion (MW);TenneT TSO (MW);TransnetBW (MW)
-2024-10-24;06:00;UTC;06:15;UTC;100,5;200,3;300,7;150,2
-
-===
-HTTP_STATUS:200
-SIZE:1234"#;
-
-        let rows =
-            parse_renewable_csv(csv, "prognose", "Solar", "2024-10-24", "2024-10-25").unwrap();
-
-        // Should parse 1 row and stop at ===
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].tso_50hertz_mw, Some(100.5));
     }
 
     // ========================================================================

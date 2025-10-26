@@ -390,7 +390,7 @@ LIMIT 5;
 2. **Invalid product_type or data_category** - Typos in filter values
    - **Solution:** Valid values:
      - `product_type`: 'solar', 'wind_onshore', 'wind_offshore'
-     - `data_category`: 'forecast', 'extrapolation', 'online_actual'
+     - `data_category`: 'extrapolation', 'online_actual' (forecast removed in v0.3.0)
 
 3. **Wind offshore with old version** - v0.1.x had 'N.E.' parsing bug
    - **Solution:** Ensure using v0.2.0+ (verify checksum from [releases](https://github.com/powabase/supabase-fdw-ntp/releases))
@@ -409,7 +409,6 @@ The NTP API hasn't published 2025 data yet (as of October 2025). All examples in
 - Month: `'2024-10-01'` to `'2024-11-01'`
 
 **Data categories:**
-- `forecast` - Future predictions
 - `extrapolation` - Historical actuals (best for testing)
 - `online_actual` - Near real-time (hourly granularity)
 
@@ -478,11 +477,11 @@ Filters are pushed to the API level for optimal performance:
 -- Excellent - 1 API call (all filters pushed down)
 SELECT * FROM ntp.renewable_energy_timeseries
 WHERE product_type = 'solar'
-  AND data_category = 'forecast'
+  AND data_category = 'extrapolation'
   AND timestamp_utc >= '2024-10-23'
   AND timestamp_utc < '2024-10-24';
 
--- Inefficient - 9 API calls (no product/category filter)
+-- Inefficient - 5 API calls (no product/category filter)
 SELECT * FROM ntp.renewable_energy_timeseries
 WHERE timestamp_utc >= '2024-10-23'
   AND timestamp_utc < '2024-10-24';
@@ -548,14 +547,14 @@ GROUP BY DATE_TRUNC('hour', timestamp_utc);
 
 ## Version Info
 
-**WASM Size:** ~301 KB
+**WASM Size:** ~327 KB
 **Tables:** 4 (renewable energy, electricity prices, redispatch events, grid status)
-**Endpoints:** 15 (9 renewable + 4 prices + 2 grid operations)
+**Endpoints:** 11 accessible (5 renewable + 4 prices + 2 grid operations)
 **Supabase Wrappers:** v0.2.0+
 
 **Latest Version:** See [GitHub Releases](https://github.com/powabase/supabase-fdw-ntp/releases/latest) for current version and changelog
-- 6 critical security fixes applied
-- 155 tests passing (100% success rate)
+- All security fixes applied
+- 190 tests passing (100% success rate)
 
 ---
 

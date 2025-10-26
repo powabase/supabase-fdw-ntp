@@ -14,10 +14,10 @@ The `renewable_energy_timeseries` endpoint consolidates all renewable energy pro
 
 **Data Characteristics:**
 - 96 rows per product per day (15-minute intervals) or 24 rows (hourly intervals, for online_actual)
-- Real-time, forecast, and historical extrapolation data
+- Real-time and historical extrapolation data (forecast removed in v0.3.0)
 - Geographic scope: Germany (4 TSO control zones covering entire country)
-- Query time: ~500ms - 3 seconds (depending on filters)
-- API coverage: 7 accessible endpoints (wind_offshore limited to online_actual only)
+- Query time: ~500ms - 2 seconds (depending on filters)
+- API coverage: 5 accessible endpoints (wind_offshore limited to online_actual only)
 
 ---
 
@@ -32,7 +32,7 @@ None - all parameters are optional. If no filters are provided, defaults to last
 | Parameter | Type | Description | Default | Example | Notes |
 |-----------|------|-------------|---------|---------|-------|
 | `product_type` | TEXT | Filter by renewable energy type | All products | `'solar'` | Values: `'solar'`, `'wind_onshore'`, `'wind_offshore'`. **Highly recommended** to specify to avoid 9 API calls. |
-| `data_category` | TEXT | Filter by data category | All categories | `'forecast'` | Values: `'forecast'`, `'extrapolation'`, `'online_actual'`. **Highly recommended** to specify to reduce API calls. |
+| `data_category` | TEXT | Filter by data category | All categories | `'extrapolation'` | Values: `'extrapolation'`, `'online_actual'` (forecast removed in v0.3.0). **Highly recommended** to specify to reduce API calls. |
 | `timestamp_utc` | TIMESTAMPTZ | Date/time range filter | Last 7 days | `>= '2024-10-24'` | Pushed to API as YYYY-MM-DD format. Hour/minute filters applied locally after fetch. |
 
 ---
@@ -52,7 +52,7 @@ None - all parameters are optional. If no filters are provided, defaults to last
 | Column | SQL Type | Description | Units | Example | Notes |
 |--------|----------|-------------|-------|---------|-------|
 | `product_type` | TEXT | Type of renewable energy source | categorical | `solar` | CHECK constraint: (`'solar'`, `'wind_onshore'`, `'wind_offshore'`). Standardized from API names: 'Solar'→'solar', 'Wind'/'Windonshore'→'wind_onshore', 'Windoffshore'→'wind_offshore'. |
-| `data_category` | TEXT | Category of data | categorical | `forecast` | CHECK constraint: (`'forecast'`, `'extrapolation'`, `'online_actual'`). Mapped from API endpoints: 'prognose'→'forecast', 'hochrechnung'→'extrapolation', 'onlinehochrechnung'→'online_actual'. |
+| `data_category` | TEXT | Category of data | categorical | `extrapolation` | CHECK constraint: (`'extrapolation'`, `'online_actual'`). Mapped from API endpoints: 'hochrechnung'→'extrapolation', 'onlinehochrechnung'→'online_actual'. |
 
 ### TSO Zone Power Generation Columns
 
@@ -81,9 +81,9 @@ None - all parameters are optional. If no filters are provided, defaults to last
 
 ## Examples
 
-### Example 1: Basic Solar Forecast Retrieval
+### Example 1: Basic Solar Extrapolation Retrieval
 
-**Purpose:** Get tomorrow's solar production forecast for all TSO zones
+**Purpose:** Get yesterday's actual solar production for all TSO zones
 
 ```sql
 SELECT
@@ -95,9 +95,9 @@ SELECT
   total_germany_mw
 FROM ntp.renewable_energy_timeseries
 WHERE product_type = 'solar'
-  AND data_category = 'forecast'
-  AND timestamp_utc >= CURRENT_DATE + INTERVAL '1 day'
-  AND timestamp_utc < CURRENT_DATE + INTERVAL '2 days'
+  AND data_category = 'extrapolation'
+  AND timestamp_utc >= '2024-10-24'
+  AND timestamp_utc < '2024-10-25'
 ORDER BY timestamp_utc
 LIMIT 10;
 ```
@@ -106,72 +106,71 @@ LIMIT 10;
 
 | timestamp_utc | tso_50hertz_mw | tso_amprion_mw | tso_tennet_mw | tso_transnetbw_mw | total_germany_mw |
 |---------------|----------------|----------------|---------------|-------------------|------------------|
-| 2024-10-25 00:00:00+00 | NULL | NULL | NULL | NULL | 0.000 |
-| 2024-10-25 00:15:00+00 | NULL | NULL | NULL | NULL | 0.000 |
-| 2024-10-25 06:00:00+00 | 45.123 | 62.456 | 78.789 | 32.234 | 218.602 |
+| 2024-10-24 00:00:00+00 | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 |
+| 2024-10-24 00:15:00+00 | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 |
+| 2024-10-24 06:00:00+00 | 245.123 | 312.456 | 428.789 | 178.234 | 1164.602 |
 
 **Insights:**
 - 10 rows shown from 96 total for full day (15-minute intervals)
-- NULL for nighttime hours (00:00-06:00), positive MW values during daylight (06:00-20:00)
+- 0.000 for nighttime hours (no solar generation), positive MW values during daylight
 - Use this pattern for single-product, single-category queries (most efficient)
 
-**Performance:** ~500ms (1 API call: prognose/Solar/YYYY-MM-DD/YYYY-MM-DD)
+**Performance:** ~500ms (1 API call: hochrechnung/Solar/YYYY-MM-DD/YYYY-MM-DD)
 
 ---
 
-### Example 2: Forecast vs Actual Comparison
+### Example 2: Extrapolation vs Online Actual Comparison
 
-**Purpose:** Calculate forecast error for yesterday's solar production
+**Purpose:** Compare historical actuals with real-time data for yesterday
 
 ```sql
-WITH forecast AS (
+WITH historical AS (
   SELECT
     DATE_TRUNC('hour', timestamp_utc) as hour,
-    AVG(total_germany_mw) as forecast_mw
-  FROM ntp.renewable_energy_timeseries
-  WHERE product_type = 'solar'
-    AND data_category = 'forecast'
-    AND timestamp_utc >= CURRENT_DATE - INTERVAL '1 day'
-    AND timestamp_utc < CURRENT_DATE
-  GROUP BY DATE_TRUNC('hour', timestamp_utc)
-),
-actual AS (
-  SELECT
-    DATE_TRUNC('hour', timestamp_utc) as hour,
-    AVG(total_germany_mw) as actual_mw
+    AVG(total_germany_mw) as extrapolation_mw
   FROM ntp.renewable_energy_timeseries
   WHERE product_type = 'solar'
     AND data_category = 'extrapolation'
-    AND timestamp_utc >= CURRENT_DATE - INTERVAL '1 day'
-    AND timestamp_utc < CURRENT_DATE
+    AND timestamp_utc >= '2024-10-24'
+    AND timestamp_utc < '2024-10-25'
+  GROUP BY DATE_TRUNC('hour', timestamp_utc)
+),
+realtime AS (
+  SELECT
+    DATE_TRUNC('hour', timestamp_utc) as hour,
+    AVG(total_germany_mw) as online_actual_mw
+  FROM ntp.renewable_energy_timeseries
+  WHERE product_type = 'solar'
+    AND data_category = 'online_actual'
+    AND timestamp_utc >= '2024-10-24'
+    AND timestamp_utc < '2024-10-25'
   GROUP BY DATE_TRUNC('hour', timestamp_utc)
 )
 SELECT
-  f.hour,
-  f.forecast_mw,
-  a.actual_mw,
-  a.actual_mw - f.forecast_mw as error_mw,
-  ABS(a.actual_mw - f.forecast_mw) / NULLIF(a.actual_mw, 0) * 100 as mape_percent
-FROM forecast f
-JOIN actual a ON f.hour = a.hour
-ORDER BY f.hour;
+  h.hour,
+  h.extrapolation_mw,
+  r.online_actual_mw,
+  ABS(h.extrapolation_mw - r.online_actual_mw) as diff_mw
+FROM historical h
+JOIN realtime r ON h.hour = r.hour
+ORDER BY h.hour;
 ```
 
 **Expected Output:**
 
-| hour | forecast_mw | actual_mw | error_mw | mape_percent |
-|------|-------------|-----------|----------|--------------|
-| 2024-10-24 07:00:00+00 | 2850.5 | 2912.3 | 61.8 | 2.12 |
-| 2024-10-24 12:00:00+00 | 15230.2 | 14985.7 | -244.5 | 1.63 |
-| 2024-10-24 18:00:00+00 | 4320.8 | 4198.2 | -122.6 | 2.92 |
+| hour | extrapolation_mw | online_actual_mw | diff_mw |
+|------|------------------|------------------|---------|
+| 2024-10-24 07:00:00+00 | 2912.3 | 2908.5 | 3.8 |
+| 2024-10-24 12:00:00+00 | 14985.7 | 14992.1 | 6.4 |
+| 2024-10-24 18:00:00+00 | 4198.2 | 4195.8 | 2.4 |
 
 **Insights:**
 - 24 rows for full day (hourly aggregation)
-- MAPE typically 2-4% for solar forecasts
-- Negative error_mw = overforecast, positive = underforecast
+- Small differences between extrapolation and online_actual (typically <1%)
+- Both data sources provide actual generation (not forecasts)
 - Self-JOIN pattern requires re_scan() support (v0.2.0+)
 
-**Performance:** ~1-2 seconds (2 API calls: prognose/Solar + hochrechnung/Solar)
+**Performance:** ~1-2 seconds (2 API calls: hochrechnung/Solar + onlinehochrechnung/Solar)
 
 ---
 
@@ -208,7 +207,7 @@ ORDER BY day, product_type;
 - Wind: more consistent 24/7, avg 8-12 GW
 - Energy calculation: power × duration (divide by 60 to convert minutes to hours)
 
-**Performance:** ~2-3 seconds (6 API calls: hochrechnung for Solar, Wind, Windoffshore)
+**Performance:** ~1.5-2 seconds (3 API calls: hochrechnung for Solar, Wind; onlinehochrechnung for Windoffshore)
 
 ---
 
@@ -529,4 +528,4 @@ This is normal for:
 
 ---
 
-**Built with NTP API** • **Powered by Supabase WASM FDW v0.2.9**
+**Built with NTP API** • **Powered by Supabase WASM FDW v0.3.0**
