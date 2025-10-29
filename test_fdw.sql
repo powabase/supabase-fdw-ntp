@@ -2,7 +2,7 @@
 -- German NTP Energy Market API - WASM Foreign Data Wrapper
 -- Generated: 2025-10-25
 -- API: https://www.netztransparenz.de
--- Version: v0.2.0
+-- Version: v0.3.0
 
 -- ============================================
 -- SETUP SECTION
@@ -24,9 +24,9 @@ CREATE FOREIGN DATA WRAPPER IF NOT EXISTS wasm_wrapper
 CREATE SERVER IF NOT EXISTS ntp_server
   FOREIGN DATA WRAPPER wasm_wrapper
   OPTIONS (
-    fdw_package_url 'https://github.com/powabase/supabase-fdw-ntp/releases/download/v0.2.0/supabase_fdw_ntp.wasm',
+    fdw_package_url 'https://github.com/powabase/supabase-fdw-ntp/releases/download/v0.3.0/supabase_fdw_ntp.wasm',
     fdw_package_name 'powabase:supabase-fdw-ntp',
-    fdw_package_version '0.2.0',
+    fdw_package_version '0.3.0',
     fdw_package_checksum '<checksum>',  -- Get from: https://github.com/powabase/supabase-fdw-ntp/releases
     api_base_url 'https://ds.netztransparenz.de',
     oauth2_token_url 'https://identity.netztransparenz.de/users/connect/token',
