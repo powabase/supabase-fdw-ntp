@@ -42,6 +42,7 @@ pub use types_grid::{GridStatusRow, RedispatchRow};
 
 use bindings::exports::supabase::wrappers::routines::{Context, FdwResult, Guest};
 use bindings::supabase::wrappers::types::{Cell, Row, Value};
+use bindings::supabase::wrappers::utils;
 
 // ============================================================================
 // Helper Functions for FDW Lifecycle
@@ -1265,18 +1266,55 @@ impl Guest for NtpFdw {
             .require("oauth2_token_url")
             .map_err(|e| format!("Missing required server option 'oauth2_token_url': {}", e))?;
 
-        // Required: OAuth2 client ID
-        let client_id = opts
-            .require("oauth2_client_id")
-            .map_err(|e| format!("Missing required server option 'oauth2_client_id': {}", e))?;
+        // Required: OAuth2 client ID (Vault or plain text)
+        // Vault reference (RECOMMENDED for security)
+        let client_id = if let Some(vault_id) = opts.get("oauth2_client_id_vault") {
+            // Retrieve from Vault (secure method)
+            utils::get_vault_secret(&vault_id).ok_or(format!(
+                "Failed to retrieve OAuth2 client ID from Vault. \
+                 Ensure the secret exists and is accessible. \
+                 Vault ID: {}",
+                vault_id
+            ))?
+        } else if let Some(plain_id) = opts.get("oauth2_client_id") {
+            // Plain text (deprecated but supported for backward compatibility)
+            utils::report_warning(
+                "Using plain text 'oauth2_client_id' is deprecated for security reasons. \
+                 Please migrate to 'oauth2_client_id_vault' with Supabase Vault. \
+                 See: https://supabase.com/docs/guides/database/vault"
+            );
+            plain_id.clone()
+        } else {
+            return Err(
+                "Either 'oauth2_client_id' or 'oauth2_client_id_vault' must be provided in server options"
+                    .to_string(),
+            );
+        };
 
-        // Required: OAuth2 client secret
-        let client_secret = opts.require("oauth2_client_secret").map_err(|e| {
-            format!(
-                "Missing required server option 'oauth2_client_secret': {}",
-                e
-            )
-        })?;
+        // Required: OAuth2 client secret (Vault or plain text)
+        // Vault reference (RECOMMENDED for security)
+        let client_secret = if let Some(vault_id) = opts.get("oauth2_client_secret_vault") {
+            // Retrieve from Vault (secure method)
+            utils::get_vault_secret(&vault_id).ok_or(format!(
+                "Failed to retrieve OAuth2 client secret from Vault. \
+                 Ensure the secret exists and is accessible. \
+                 Vault ID: {}",
+                vault_id
+            ))?
+        } else if let Some(plain_secret) = opts.get("oauth2_client_secret") {
+            // Plain text (deprecated but supported for backward compatibility)
+            utils::report_warning(
+                "Using plain text 'oauth2_client_secret' is deprecated for security reasons. \
+                 Please migrate to 'oauth2_client_secret_vault' with Supabase Vault. \
+                 See: https://supabase.com/docs/guides/database/vault"
+            );
+            plain_secret.clone()
+        } else {
+            return Err(
+                "Either 'oauth2_client_secret' or 'oauth2_client_secret_vault' must be provided in server options"
+                    .to_string(),
+            );
+        };
 
         // Optional: OAuth2 scope (default: ntpStatistic.read_all_public)
         let scope = opts.require_or("oauth2_scope", "ntpStatistic.read_all_public");

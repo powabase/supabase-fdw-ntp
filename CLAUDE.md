@@ -10,9 +10,9 @@ This wrapper follows the WASM FDW architecture required for hosted Supabase inst
 
 ## Project Status
 
-**✅ v0.3.0 - Production Ready (100% Accessible Endpoints)**
+**✅ v0.3.1 - Production Ready (100% Accessible Endpoints + Vault Support)**
 
-- **Current Version:** v0.3.0
+- **Current Version:** v0.3.1
 - **Status:** Production-ready, 11/11 accessible endpoints working (100% coverage) 🎉
 - **Tables:** 4 (renewable energy, electricity prices, redispatch events, grid status) - ALL WORKING ✅
 - **API Endpoints:** 11/11 accessible endpoints functional (100% completion) ✅
@@ -21,6 +21,7 @@ This wrapper follows the WASM FDW architecture required for hosted Supabase inst
 - **WASM Binary:** ~327 KB, validated, zero WASI CLI imports ✅
 - **Tests:** 190 unit tests passing ✅
 - **Query Performance:** Single endpoint ~200-500ms, 3 parallel ~600-1500ms ✅
+- **New in v0.3.1:** Supabase Vault support for secure OAuth2 credential storage (backward compatible) ✅
 - **New in v0.3.0:** Removed forecast endpoint (extrapolation + online_actual only, 11 accessible endpoints) ✅
 - **Fixed in v0.2.10:** TrafficLight endpoint datetime format and timezone-less timestamp parsing ✅
 - **Fixed in v0.2.9:** NegativePreise UNPIVOT bug (4 rows per timestamp) ✅
@@ -341,6 +342,6 @@ All three must match for successful builds and releases.
 
 ---
 
-**Version:** v0.3.0
-**Last Updated:** 2025-10-26
-**Status:** Production Ready - 100% Accessible Endpoint Coverage (11/11)
+**Version:** v0.3.1
+**Last Updated:** 2025-10-29
+**Status:** Production Ready - 100% Accessible Endpoint Coverage (11/11) + Vault Support

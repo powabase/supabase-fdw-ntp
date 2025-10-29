@@ -92,6 +92,108 @@ ls -lh target/wasm32-unknown-unknown/release/supabase_fdw_ntp.wasm
 
 **Deploy:** See [QUICKSTART.md](QUICKSTART.md) for complete deployment instructions.
 
+## Security: Using Vault for OAuth2 Credentials (Recommended)
+
+**⚠️ Important:** As of v0.3.1, this wrapper supports Supabase Vault for secure credential storage. Vault is **strongly recommended** for production deployments.
+
+### Why Vault?
+
+Supabase Vault provides encrypted secret storage with several security benefits:
+- ✅ Encryption at rest using `pgsodium`
+- ✅ Secrets referenced by UUID only (no plain text in `pg_catalog`)
+- ✅ Audit trail and secret versioning
+- ✅ Industry-standard best practice for Supabase FDW wrappers
+
+### Step 1: Store Secrets in Vault
+
+```sql
+-- Create encrypted OAuth2 client ID in Vault
+SELECT vault.create_secret(
+  'your_actual_client_id_here',
+  'ntp_oauth2_client_id',
+  'NTP API OAuth2 client ID'
+);
+-- Returns: key_id (UUID) like '550e8400-e29b-41d4-a716-446655440000'
+
+-- Create encrypted OAuth2 client secret in Vault
+SELECT vault.create_secret(
+  'your_actual_client_secret_here',
+  'ntp_oauth2_client_secret',
+  'NTP API OAuth2 client secret'
+);
+-- Returns: key_id (UUID) like '660f9511-f30c-52e5-b827-557766551111'
+```
+
+### Step 2: Create Server with Vault References
+
+```sql
+CREATE SERVER ntp_server
+  FOREIGN DATA WRAPPER wasm_wrapper
+  OPTIONS (
+    fdw_package_url 'https://github.com/powabase/supabase-fdw-ntp/releases/download/v0.3.1/supabase_fdw_ntp.wasm',
+    fdw_package_name 'powabase:supabase-fdw-ntp',
+    fdw_package_version '0.3.1',
+    fdw_package_checksum '<sha256_checksum_here>',
+    api_base_url 'https://api.netztransparenz.de/StatisticData/v2',
+    oauth2_token_url 'https://api.netztransparenz.de/OAuth2/token',
+    oauth2_client_id_vault '550e8400-e29b-41d4-a716-446655440000',      -- ✅ Vault UUID (secure)
+    oauth2_client_secret_vault '660f9511-f30c-52e5-b827-557766551111',  -- ✅ Vault UUID (secure)
+    oauth2_scope 'ntpStatistic.read_all_public'
+  );
+```
+
+### Secret Rotation
+
+Rotate credentials without downtime:
+
+```sql
+-- 1. Create new secrets in Vault
+SELECT vault.create_secret('<NEW_CLIENT_ID>', 'ntp_oauth2_client_id_v2', 'Rotated client ID');
+SELECT vault.create_secret('<NEW_CLIENT_SECRET>', 'ntp_oauth2_client_secret_v2', 'Rotated client secret');
+
+-- 2. Update server with new Vault UUIDs
+ALTER SERVER ntp_server OPTIONS (SET oauth2_client_id_vault '<new_client_id_vault_uuid>');
+ALTER SERVER ntp_server OPTIONS (SET oauth2_client_secret_vault '<new_client_secret_vault_uuid>');
+
+-- 3. Verify it works, then delete old secrets
+-- DELETE FROM vault.secrets WHERE id = '<old_vault_uuid>';
+```
+
+### Legacy: Plain Text Credentials (Deprecated)
+
+⚠️ **Not recommended for production use**
+
+Plain text credentials remain supported for backward compatibility but will trigger deprecation warnings:
+
+```sql
+CREATE SERVER ntp_server_legacy
+  FOREIGN DATA WRAPPER wasm_wrapper
+  OPTIONS (
+    -- ... other options ...
+    oauth2_client_id 'plain_text_client_id',          -- ❌ Insecure (visible in pg_catalog)
+    oauth2_client_secret 'plain_text_client_secret'   -- ❌ Insecure (visible in pg_catalog)
+  );
+```
+
+**Security Warnings:**
+- Plain text credentials are visible in `pg_catalog.pg_foreign_server`
+- Stored unencrypted in database dumps
+- No audit trail for access or rotation
+- May be accidentally committed to version control
+
+**Migration Path:** Replace `oauth2_client_id` / `oauth2_client_secret` with `oauth2_client_id_vault` / `oauth2_client_secret_vault` using Vault UUIDs.
+
+### Troubleshooting
+
+**Issue: "Failed to retrieve OAuth2 client ID from Vault"**
+- Verify the UUID exists: `SELECT id, name FROM vault.secrets WHERE id = '<uuid>';`
+- Check permissions on `vault.secrets` table (RLS policies)
+- Ensure UUID format is valid (36 characters with hyphens)
+
+**Issue: Deprecation warning not showing**
+- Check PostgreSQL log level: `SHOW client_min_messages;` (should be `notice` or lower)
+- Warnings appear in PostgreSQL logs, not query results
+
 ## Usage Examples
 
 ### Example 1: Solar Production (Last 7 Days)

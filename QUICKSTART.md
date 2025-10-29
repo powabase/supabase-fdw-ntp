@@ -20,8 +20,30 @@ CREATE EXTENSION IF NOT EXISTS wrappers WITH SCHEMA extensions;
 CREATE FOREIGN DATA WRAPPER IF NOT EXISTS wasm_wrapper
   HANDLER wasm_fdw_handler
   VALIDATOR wasm_fdw_validator;
+```
 
--- Create NTP server
+### Step 1a: Store OAuth2 Credentials in Vault (Recommended)
+
+**✅ Secure method** - Use Supabase Vault for encrypted secret storage:
+
+```sql
+-- Store OAuth2 client ID in Vault
+SELECT vault.create_secret(
+  'your_actual_client_id_here',
+  'ntp_oauth2_client_id',
+  'NTP API OAuth2 client ID'
+);
+-- Returns: key_id (UUID) - Copy this!
+
+-- Store OAuth2 client secret in Vault
+SELECT vault.create_secret(
+  'your_actual_client_secret_here',
+  'ntp_oauth2_client_secret',
+  'NTP API OAuth2 client secret'
+);
+-- Returns: key_id (UUID) - Copy this!
+
+-- Create NTP server with Vault references
 CREATE SERVER ntp_server
   FOREIGN DATA WRAPPER wasm_wrapper
   OPTIONS (
@@ -31,8 +53,29 @@ CREATE SERVER ntp_server
     fdw_package_checksum '<checksum>',  -- Get from: https://github.com/powabase/supabase-fdw-ntp/releases/latest
     api_base_url 'https://ds.netztransparenz.de/api/v1/data',
     oauth2_token_url 'https://identity.netztransparenz.de/users/connect/token',
-    oauth2_client_id 'YOUR_CLIENT_ID',           -- Replace with your credentials
-    oauth2_client_secret 'YOUR_CLIENT_SECRET',   -- Replace with your credentials
+    oauth2_client_id_vault '<client_id_vault_uuid>',      -- ✅ Vault UUID from above
+    oauth2_client_secret_vault '<client_secret_vault_uuid>',  -- ✅ Vault UUID from above
+    oauth2_scope 'ntpStatistic.read_all_public'
+  );
+```
+
+### Step 1b: Plain Text Credentials (Legacy, Deprecated)
+
+⚠️ **Not recommended** - Plain text credentials are insecure and will trigger deprecation warnings:
+
+```sql
+-- Create NTP server with plain text credentials (DEPRECATED)
+CREATE SERVER ntp_server
+  FOREIGN DATA WRAPPER wasm_wrapper
+  OPTIONS (
+    fdw_package_url 'https://github.com/powabase/supabase-fdw-ntp/releases/latest/download/supabase_fdw_ntp.wasm',
+    fdw_package_name 'supabase-fdw-ntp',
+    fdw_package_version '<version>',  -- Get from: https://github.com/powabase/supabase-fdw-ntp/releases/latest
+    fdw_package_checksum '<checksum>',  -- Get from: https://github.com/powabase/supabase-fdw-ntp/releases/latest
+    api_base_url 'https://ds.netztransparenz.de/api/v1/data',
+    oauth2_token_url 'https://identity.netztransparenz.de/users/connect/token',
+    oauth2_client_id 'YOUR_CLIENT_ID',           -- ❌ Insecure (visible in pg_catalog)
+    oauth2_client_secret 'YOUR_CLIENT_SECRET',   -- ❌ Insecure (visible in pg_catalog)
     oauth2_scope 'ntpStatistic.read_all_public'
   );
 ```
@@ -48,7 +91,7 @@ CREATE SERVER ntp_server
    - `client_secret` - Your authentication secret (keep secure!)
    - `scope` - Use `ntpStatistic.read_all_public` for read-only access
 
-**Security note:** Never commit credentials to version control. Store them securely in your Supabase project settings.
+**Security note:** Use Supabase Vault (Step 1a) for production deployments. Vault provides encrypted storage, audit trails, and secure rotation. Plain text credentials (Step 1b) are deprecated and should only be used for local testing.
 
 ## Step 2: Create Foreign Tables (2 min)
 
@@ -321,22 +364,43 @@ LIMIT 5;
 
 ### Authentication errors?
 
-**Cause:** Invalid or expired OAuth2 credentials
+**Cause:** Invalid or expired OAuth2 credentials, or Vault secret not found
 
 **Solution:**
-1. Verify credentials are correct:
+
+1. **If using Vault** (recommended):
    ```sql
-   SELECT * FROM pg_foreign_server WHERE srvname = 'ntp_server';
+   -- Verify Vault secrets exist
+   SELECT id, name, description FROM vault.secrets
+   WHERE name LIKE 'ntp_oauth2%';
+
+   -- Check decrypted value (superuser only)
+   SELECT decrypted_secret FROM vault.decrypted_secrets
+   WHERE name = 'ntp_oauth2_client_id';
+
+   -- Update with new Vault UUID if needed
+   ALTER SERVER ntp_server OPTIONS (
+     SET oauth2_client_id_vault '<new_vault_uuid>',
+     SET oauth2_client_secret_vault '<new_vault_uuid>'
+   );
    ```
-2. Update credentials if needed:
+
+2. **If using plain text** (deprecated):
    ```sql
-   ALTER SERVER ntp_server
-   OPTIONS (
+   -- Verify credentials (WARNING: exposes secrets!)
+   SELECT * FROM pg_foreign_server WHERE srvname = 'ntp_server';
+
+   -- Update credentials if needed
+   ALTER SERVER ntp_server OPTIONS (
      SET oauth2_client_id 'YOUR_NEW_CLIENT_ID',
      SET oauth2_client_secret 'YOUR_NEW_CLIENT_SECRET'
    );
    ```
-3. Tokens are cached for 1 hour and refresh automatically on 401 errors
+
+3. **OAuth2 token behavior:**
+   - Tokens are cached for 1 hour
+   - Automatically refresh on 401 errors
+   - Manual refresh not required
 
 ### Slow queries?
 
@@ -447,6 +511,28 @@ curl -I http://localhost:8000/supabase_fdw_ntp.wasm
 
 ### Create Server with Local URL
 
+**Option A: With Vault (recommended even for local testing)**
+```sql
+-- Create test secrets in Vault
+SELECT vault.create_secret('YOUR_CLIENT_ID', 'ntp_test_client_id', 'Test client ID');
+SELECT vault.create_secret('YOUR_CLIENT_SECRET', 'ntp_test_client_secret', 'Test client secret');
+
+CREATE SERVER ntp_server_local
+  FOREIGN DATA WRAPPER wasm_wrapper
+  OPTIONS (
+    fdw_package_url 'http://host.docker.internal:8000/supabase_fdw_ntp.wasm',
+    fdw_package_name 'supabase-fdw-ntp',
+    fdw_package_version '<current-version>',  -- Match your build version
+    fdw_package_checksum '<YOUR_CHECKSUM_HERE>',
+    api_base_url 'https://ds.netztransparenz.de/api/v1/data',
+    oauth2_token_url 'https://identity.netztransparenz.de/users/connect/token',
+    oauth2_client_id_vault '<vault_uuid_from_above>',
+    oauth2_client_secret_vault '<vault_uuid_from_above>',
+    oauth2_scope 'ntpStatistic.read_all_public'
+  );
+```
+
+**Option B: With plain text (quick testing only)**
 ```sql
 CREATE SERVER ntp_server_local
   FOREIGN DATA WRAPPER wasm_wrapper

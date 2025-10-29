@@ -1,8 +1,8 @@
 -- NTP FDW Wrapper Test Suite
 -- German NTP Energy Market API - WASM Foreign Data Wrapper
--- Generated: 2025-10-25
+-- Generated: 2025-10-29
 -- API: https://www.netztransparenz.de
--- Version: v0.3.0
+-- Version: v0.3.1
 
 -- ============================================
 -- SETUP SECTION
@@ -19,19 +19,49 @@ CREATE FOREIGN DATA WRAPPER IF NOT EXISTS wasm_wrapper
   VALIDATOR wasm_fdw_validator;
 
 -- Create foreign server
--- NOTE: Replace YOUR_CLIENT_ID and YOUR_CLIENT_SECRET with actual OAuth2 credentials
--- Get credentials from: https://www.netztransparenz.de
+-- NOTE: Get OAuth2 credentials from: https://www.netztransparenz.de
+
+-- ============================================
+-- OPTION A: Vault Credentials (RECOMMENDED)
+-- ============================================
+-- Use Supabase Vault for secure, encrypted credential storage
+--
+-- STEP 1: Store credentials in Vault (run these first!)
+-- SELECT vault.create_secret('your_client_id', 'ntp_oauth2_client_id', 'NTP API OAuth2 client ID');
+-- SELECT vault.create_secret('your_client_secret', 'ntp_oauth2_client_secret', 'NTP API OAuth2 client secret');
+-- Note the returned UUIDs and use them below
+--
+-- STEP 2: Create server with Vault references
+-- CREATE SERVER IF NOT EXISTS ntp_server
+--   FOREIGN DATA WRAPPER wasm_wrapper
+--   OPTIONS (
+--     fdw_package_url 'https://github.com/powabase/supabase-fdw-ntp/releases/download/v0.3.1/supabase_fdw_ntp.wasm',
+--     fdw_package_name 'powabase:supabase-fdw-ntp',
+--     fdw_package_version '0.3.1',
+--     fdw_package_checksum '<checksum>',  -- Get from: https://github.com/powabase/supabase-fdw-ntp/releases
+--     api_base_url 'https://ds.netztransparenz.de',
+--     oauth2_token_url 'https://identity.netztransparenz.de/users/connect/token',
+--     oauth2_client_id_vault '<client_id_vault_uuid>',       -- ✅ Vault UUID (secure)
+--     oauth2_client_secret_vault '<client_secret_vault_uuid>', -- ✅ Vault UUID (secure)
+--     oauth2_scope 'ntpStatistic.read_all_public'
+--   );
+
+-- ============================================
+-- OPTION B: Plain Text Credentials (LEGACY, DEPRECATED)
+-- ============================================
+-- ⚠️ NOT RECOMMENDED: Plain text credentials trigger deprecation warnings
+-- Only use for quick local testing
 CREATE SERVER IF NOT EXISTS ntp_server
   FOREIGN DATA WRAPPER wasm_wrapper
   OPTIONS (
-    fdw_package_url 'https://github.com/powabase/supabase-fdw-ntp/releases/download/v0.3.0/supabase_fdw_ntp.wasm',
+    fdw_package_url 'https://github.com/powabase/supabase-fdw-ntp/releases/download/v0.3.1/supabase_fdw_ntp.wasm',
     fdw_package_name 'powabase:supabase-fdw-ntp',
-    fdw_package_version '0.3.0',
+    fdw_package_version '0.3.1',
     fdw_package_checksum '<checksum>',  -- Get from: https://github.com/powabase/supabase-fdw-ntp/releases
     api_base_url 'https://ds.netztransparenz.de',
     oauth2_token_url 'https://identity.netztransparenz.de/users/connect/token',
-    oauth2_client_id 'YOUR_CLIENT_ID',
-    oauth2_client_secret 'YOUR_CLIENT_SECRET',
+    oauth2_client_id 'YOUR_CLIENT_ID',         -- ❌ Insecure (visible in pg_catalog)
+    oauth2_client_secret 'YOUR_CLIENT_SECRET', -- ❌ Insecure (visible in pg_catalog)
     oauth2_scope 'ntpStatistic.read_all_public'
   );
 
